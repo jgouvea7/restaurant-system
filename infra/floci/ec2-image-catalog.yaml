@@ -1,0 +1,27 @@
+defaultDockerImage: public.ecr.aws/amazonlinux/amazonlinux:2023
+
+images:
+  - imageId: ami-0abcdef1234567891
+    aliases:
+      - ami-amazonlinux2023
+    dockerImage: public.ecr.aws/amazonlinux/amazonlinux:2023
+    name: al2023-ami-2023.0.20230315.0-kernel-6.1-x86_64
+    description: Amazon Linux 2023 AMI
+    ownerId: "137112412989"
+    imageOwnerAlias: amazon
+    architecture: x86_64
+    rootVolumeType: gp3
+    creationDate: "2023-03-15T00:00:00.000Z"
+
+  - imageId: ami-0abc1234567890def
+    aliases:
+      - ami-restaurant-app
+    dockerImage: restaurant-app:latest
+    name: restaurant-app-2026.10
+    description: Restaurant NestJS API
+    ownerId: "000000000000"
+    architecture: x86_64
+    rootVolumeType: gp3
+    rootDeviceType: ebs
+    virtualizationType: hvm
+    creationDate: "2026-10-20T00:00:00.000Z"
