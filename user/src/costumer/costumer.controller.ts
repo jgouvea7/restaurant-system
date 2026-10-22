@@ -8,27 +8,15 @@ export class CostumerController {
   constructor(private readonly costumerService: CostumerService) {}
 
   @Post()
-  create(@Body() createCostumerDto: CreateCostumerDto) {
-    return this.costumerService.create(createCostumerDto);
+  async createUser(@Body() createCostumerDto: CreateCostumerDto) {
+    const user = this.costumerService.createUserCostumer(createCostumerDto)
+    return user;
   }
 
   @Get()
-  findAll() {
-    return this.costumerService.findAll();
+  getUsers() {
+    return this.costumerService.getAllUsers();
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.costumerService.findOne(+id);
-  }
-
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateCostumerDto: UpdateCostumerDto) {
-    return this.costumerService.update(+id, updateCostumerDto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.costumerService.remove(+id);
-  }
+  
 }

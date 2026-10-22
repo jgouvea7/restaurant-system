@@ -1,7 +1,8 @@
 export class CreateCostumerDto {
     firstName!: string;
     lastName!: string;
-    status!: boolean;
+    email!: string;
+    password!: string;
     costumer!: {
         phone: string;
         address: {

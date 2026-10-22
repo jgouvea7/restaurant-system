@@ -11,7 +11,6 @@ export class Costumer {
     phone!: string;
 
     @OneToMany(() => Address, (address) => address.costumer)
-    @JoinColumn({ name: "costumer_id"})
     address!: Address[];
 
     @OneToOne(() => User, (user) => user.costumer)

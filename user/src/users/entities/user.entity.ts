@@ -18,6 +18,12 @@ export class User {
     @Column()
     lastName!: string;
 
+    @Column()
+    email!: string;
+    
+    @Column()
+    password!: string
+
     @Column({ default: userStatus.ACTIVE })
     status!: userStatus
 
