@@ -1,0 +1,36 @@
+FROM node:22-alpine AS build
+WORKDIR /app
+
+COPY aws ./aws
+COPY user ./user
+
+RUN cd aws && npm install && npm run build
+RUN cd user && npm install && npm run build
+RUN cd aws && npm prune --omit=dev && cd ../user && npm prune --omit=dev
+
+FROM node:22-alpine AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production \
+    PORT=3000 \
+    DB_HOST=floci \
+    DB_PORT=17001 \
+    DB_USER=restaurant \
+    DB_PASSWORD=restaurant1234 \
+    DB_NAME=restaurant_user \
+    AWS_ENDPOINT_URL=http://floci:4566 \
+    AWS_DEFAULT_REGION=us-east-1 \
+    AWS_ACCESS_KEY_ID=restaurant \
+    AWS_SECRET_ACCESS_KEY=secretkeyrestaurant
+
+COPY --from=build /app/aws/package.json ./aws/package.json
+COPY --from=build /app/aws/dist ./aws/dist
+COPY --from=build /app/aws/node_modules ./aws/node_modules
+COPY --from=build /app/user/package.json ./user/package.json
+COPY --from=build /app/user/node_modules ./user/node_modules
+COPY --from=build /app/user/dist ./user/dist
+
+WORKDIR /app/user
+EXPOSE 3000
+
+ENTRYPOINT ["node", "dist/main.js"]

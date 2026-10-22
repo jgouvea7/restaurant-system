@@ -6,25 +6,25 @@ export class Address {
     @PrimaryGeneratedColumn("uuid")
     id!: string
 
-    @Column()
+    @Column({ nullable: true })
     street!: string;
 
-    @Column()
-    number!: number;
+    @Column({ nullable: true })
+    number!: string;
 
-    @Column()
+    @Column({ nullable: true })
     city!: string;
 
-    @Column()
+    @Column({ nullable: true })
     state!: string;
 
-    @Column()
+    @Column({ nullable: true })
     postalCode!: string;
 
-    @Column({ type: "decimal", precision: 10, scale: 8})
+    @Column({ type: "decimal", precision: 10, scale: 8, nullable: true })
     latitude!: number;
 
-    @Column({ type: "decimal", precision: 11, scale: 8})
+    @Column({ type: "decimal", precision: 11, scale: 8, nullable: true })
     longitude!: number;
 
     @ManyToOne(() => Costumer, (costumer) => costumer.address, {
@@ -33,5 +33,4 @@ export class Address {
     @JoinColumn({ name: "costumer_id" })
     costumer!: Costumer
 
-    
 }

@@ -1,0 +1,73 @@
+services:
+  floci:
+    image: floci/floci:2.3.0
+    container_name: floci
+    ports:
+      - "4566:4566"
+      - "17001-17099:17001-17099"
+      - "16379-16399:16379-16399"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - floci-data:/app/data
+      - ./infra/floci/ec2-image-catalog.yaml:/app/config/ec2-image-catalog.yaml:ro
+    environment:
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: restaurant
+      AWS_SECRET_ACCESS_KEY: secretkeyrestaurant
+      FLOCI_HOSTNAME: floci
+      FLOCI_BASE_URL: http://floci:4566
+      FLOCI_STORAGE_MODE: persistent
+      FLOCI_STORAGE_PERSISTENT_PATH: /app/data
+      FLOCI_SERVICES_DOCKER_NETWORK: restaurant_default
+      FLOCI_SERVICES_RDS_ENDPOINT_HOST: floci
+      FLOCI_SERVICES_RDS_PROXY_BASE_PORT: "17001"
+      FLOCI_SERVICES_RDS_PROXY_MAX_PORT: "17099"
+      FLOCI_SERVICES_ELASTICACHE_PROXY_BASE_PORT: "16379"
+      FLOCI_SERVICES_ELASTICACHE_PROXY_MAX_PORT: "16399"
+      FLOCI_SERVICES_EC2_IMAGE_CATALOG_PATH: /app/config/ec2-image-catalog.yaml
+      FLOCI_SERVICES_EC2_PUBLISH_SECURITY_GROUP_PORTS: "false"
+      FLOCI_NETWORK_SECURITY_GROUP_ENFORCEMENT_ENABLED: "false"
+    networks:
+      - default
+
+  app-image:
+    image: restaurant-app:latest
+    build:
+      context: .
+      dockerfile: user/DockerFile
+    entrypoint: ["/bin/true"]
+    restart: "no"
+    networks:
+      - default
+
+  terraform:
+    image: hashicorp/terraform:1.9
+    working_dir: /workspace/infra
+    volumes:
+      - ./:/workspace
+    environment:
+      TF_VAR_endpoint: http://floci:4566
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until wget -qO- http://floci:4566/health >/dev/null 2>&1; do
+          echo "Aguardando o Floci..."
+          sleep 2
+        done
+        terraform init -input=false
+        terraform apply -auto-approve -input=false
+    depends_on:
+      floci:
+        condition: service_started
+      app-image:
+        condition: service_completed_successfully
+    networks:
+      - default
+
+networks:
+  default:
+    name: restaurant_default
+
+volumes:
+  floci-data:
