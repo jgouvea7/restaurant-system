@@ -8,14 +8,13 @@ export class CostumerController {
   constructor(private readonly costumerService: CostumerService) {}
 
   @Post()
-  async createUser(@Body() createCostumerDto: CreateCostumerDto) {
-    const user = this.costumerService.createUserCostumer(createCostumerDto)
-    return user;
+  async createUserCostumer(@Body() createCostumerDto: CreateCostumerDto) {
+    return this.costumerService.createUserCostumer(createCostumerDto)
   }
 
   @Get()
   getUsers() {
-    return this.costumerService.getAllUsers();
+    return this.costumerService.getAllCostumerUsers();
   }
 
   

@@ -5,7 +5,7 @@ import { Column, Entity, JoinColumn, OneToMany, OneToOne, PrimaryColumn, Primary
 @Entity()
 export class Costumer {
     @PrimaryGeneratedColumn("uuid")
-    id!: string;
+    costumerId!: string;
 
     @Column()
     phone!: string;
