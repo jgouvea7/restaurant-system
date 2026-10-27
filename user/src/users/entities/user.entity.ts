@@ -3,8 +3,8 @@ import { Courier } from "src/courier/entities/courier.entity"
 import { Column, Entity, OneToOne, PrimaryGeneratedColumn } from "typeorm"
 
 export enum userStatus {
-    ACTIVE,
-    DESACTIVE
+    ACTIVE = "active",
+    DESACTIVE = "desactive"
 }
 
 @Entity()

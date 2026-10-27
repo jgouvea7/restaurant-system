@@ -8,27 +8,17 @@ export class CourierController {
   constructor(private readonly courierService: CourierService) {}
 
   @Post()
-  create(@Body() createCourierDto: CreateCourierDto) {
-    return this.courierService.create(createCourierDto);
+  createUserCourier(@Body() createCourierDto: CreateCourierDto) {
+    return this.courierService.createUserCourier(createCourierDto);
+  }
+
+  @Post(":id/available")
+  updateCourierAvailable(@Param('id') courierId: string){
+    return this.courierService.updateCourierStatus(courierId);
   }
 
   @Get()
   findAll() {
-    return this.courierService.findAll();
-  }
-
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.courierService.findOne(+id);
-  }
-
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateCourierDto: UpdateCourierDto) {
-    return this.courierService.update(+id, updateCourierDto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.courierService.remove(+id);
+    return this.courierService.getAllCourierUsers();
   }
 }

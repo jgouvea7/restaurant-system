@@ -73,7 +73,7 @@ export class CostumerService {
     
   }
 
-  getAllUsers() {
+  getAllCostumerUsers() {
     return this.dataSource.getRepository(Costumer).find({
       relations: {
         user: true,
