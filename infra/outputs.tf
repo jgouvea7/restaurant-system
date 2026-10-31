@@ -1,13 +1,25 @@
-output "app_url" {
+output "user_url" {
   value = "http://localhost:8080"
 }
 
-output "asg_name" {
+output "restaurant_url" {
+  value = "http://localhost:8081"
+}
+
+output "user_asg_name" {
   value = aws_autoscaling_group.user.name
 }
 
-output "db_endpoint" {
+output "restaurant_asg_name" {
+  value = aws_autoscaling_group.restaurant.name
+}
+
+output "user_db_endpoint" {
   value = aws_db_instance.user.endpoint
+}
+
+output "restaurant_db_endpoint" {
+  value = aws_db_instance.restaurant.endpoint
 }
 
 output "redis_endpoint" {

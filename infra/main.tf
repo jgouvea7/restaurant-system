@@ -2,7 +2,7 @@ resource "aws_vpc" "main" {
   cidr_block = "10.20.0.0/16"
 
   tags = {
-    Name = "restaurant"
+    Name = "main"
   }
 }
 
@@ -12,27 +12,39 @@ resource "aws_subnet" "main" {
   availability_zone = "${var.region}a"
 
   tags = {
-    Name = "restaurant"
+    Name = "main-a"
   }
 }
 
-resource "aws_subnet" "app_b" {
+moved {
+  from = aws_subnet.app_b
+  to   = aws_subnet.secondary
+}
+
+resource "aws_subnet" "secondary" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.20.2.0/24"
   availability_zone = "${var.region}b"
 
   tags = {
-    Name = "restaurant-b"
+    Name = "main-b"
   }
 }
 
 resource "aws_security_group" "alb" {
-  name   = "restaurant-alb"
+  name   = "alb"
   vpc_id = aws_vpc.main.id
 
   ingress {
     from_port   = 8080
     to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 8081
+    to_port     = 8081
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -45,12 +57,12 @@ resource "aws_security_group" "alb" {
   }
 
   tags = {
-    Name = "restaurant-alb"
+    Name = "alb"
   }
 }
 
 resource "aws_security_group" "app" {
-  name   = "restaurant-app"
+  name   = "app"
   vpc_id = aws_vpc.main.id
 
   ingress {
@@ -68,26 +80,26 @@ resource "aws_security_group" "app" {
   }
 
   tags = {
-    Name = "restaurant-app"
+    Name = "app"
   }
 }
 
 resource "aws_db_subnet_group" "main" {
-  name       = "restaurant-db"
-  subnet_ids = [aws_subnet.main.id]
+  name       = "db"
+  subnet_ids = [aws_subnet.main.id, aws_subnet.secondary.id]
 
   tags = {
-    Name = "restaurant-db"
+    Name = "db"
   }
 }
 
 resource "aws_db_instance" "user" {
-  identifier        = "restaurant-user-db"
+  identifier        = "user-db"
   engine            = "postgres"
   engine_version    = "16"
   instance_class    = "db.t3.micro"
   allocated_storage = 20
-  db_name           = "restaurant_user"
+  db_name           = "users"
   username          = "restaurant"
   password          = "restaurant1234"
   port              = 17001
@@ -96,13 +108,32 @@ resource "aws_db_instance" "user" {
   skip_final_snapshot  = true
 
   tags = {
-    Name = "restaurant-user-db"
+    Name = "user-db"
+  }
+}
+
+resource "aws_db_instance" "restaurant" {
+  identifier        = "restaurant-db"
+  engine            = "postgres"
+  engine_version    = "16"
+  instance_class    = "db.t3.micro"
+  allocated_storage = 20
+  db_name           = "restaurants"
+  username          = "restaurant"
+  password          = "restaurant1234"
+  port              = 17002
+
+  db_subnet_group_name = aws_db_subnet_group.main.name
+  skip_final_snapshot  = true
+
+  tags = {
+    Name = "restaurant-db"
   }
 }
 
 resource "aws_elasticache_replication_group" "redis" {
-  replication_group_id    = "restaurant-cache"
-  description             = "restaurant-cache"
+  replication_group_id    = "cache"
+  description             = "cache"
   engine                  = "redis"
   engine_version          = "7.1"
   node_type               = "cache.t4g.micro"
@@ -113,36 +144,36 @@ resource "aws_elasticache_replication_group" "redis" {
   apply_immediately       = true
 
   tags = {
-    Name = "restaurant-cache"
+    Name = "cache"
   }
 }
 
 resource "aws_s3_bucket" "uploads" {
-  bucket = "restaurant-uploads"
+  bucket = "uploads"
 
   tags = {
-    Name = "restaurant-uploads"
+    Name = "uploads"
   }
 }
 
 resource "aws_sns_topic" "events" {
-  name = "restaurant-events"
+  name = "events"
 
   tags = {
-    Name = "restaurant-events"
+    Name = "events"
   }
 }
 
 resource "aws_sqs_queue" "events" {
-  name = "restaurant-events"
+  name = "events"
 
   tags = {
-    Name = "restaurant-events"
+    Name = "events"
   }
 }
 
 resource "aws_launch_template" "user" {
-  name                   = "restaurant-user"
+  name                   = "user"
   image_id               = "ami-0abc1234567890def"
   instance_type          = "t3.micro"
   vpc_security_group_ids = [aws_security_group.app.id]
@@ -151,13 +182,13 @@ resource "aws_launch_template" "user" {
     resource_type = "instance"
 
     tags = {
-      Name = "restaurant-user"
+      Name = "user"
     }
   }
 }
 
 resource "aws_lb_target_group" "user" {
-  name        = "restaurant-user"
+  name        = "user"
   port        = 3000
   protocol    = "HTTP"
   target_type = "instance"
@@ -175,19 +206,19 @@ resource "aws_lb_target_group" "user" {
   }
 
   tags = {
-    Name = "restaurant-user"
+    Name = "user"
   }
 }
 
 resource "aws_lb" "user" {
-  name               = "restaurant-user"
+  name               = "user"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
-  subnets            = [aws_subnet.main.id, aws_subnet.app_b.id]
+  subnets            = [aws_subnet.main.id, aws_subnet.secondary.id]
 
   tags = {
-    Name = "restaurant-user"
+    Name = "user"
   }
 }
 
@@ -203,11 +234,11 @@ resource "aws_lb_listener" "user" {
 }
 
 resource "aws_autoscaling_group" "user" {
-  name                      = "restaurant-user"
+  name                      = "user"
   min_size                  = 1
   max_size                  = 5
   desired_capacity          = 3
-  vpc_zone_identifier       = [aws_subnet.main.id, aws_subnet.app_b.id]
+  vpc_zone_identifier       = [aws_subnet.main.id, aws_subnet.secondary.id]
   target_group_arns         = [aws_lb_target_group.user.arn]
   health_check_type         = "ELB"
   wait_for_capacity_timeout = "0"
@@ -219,7 +250,7 @@ resource "aws_autoscaling_group" "user" {
 
   tag {
     key                 = "Name"
-    value               = "restaurant-user"
+    value               = "user"
     propagate_at_launch = true
   }
 
@@ -230,5 +261,97 @@ resource "aws_autoscaling_group" "user" {
     aws_sns_topic.events,
     aws_sqs_queue.events,
     aws_lb_listener.user,
+  ]
+}
+
+resource "aws_launch_template" "restaurant" {
+  name                   = "restaurant"
+  image_id               = "ami-0fedcba9876543210"
+  instance_type          = "t3.micro"
+  vpc_security_group_ids = [aws_security_group.app.id]
+
+  tag_specifications {
+    resource_type = "instance"
+
+    tags = {
+      Name = "restaurant"
+    }
+  }
+}
+
+resource "aws_lb_target_group" "restaurant" {
+  name        = "restaurant"
+  port        = 3000
+  protocol    = "HTTP"
+  target_type = "instance"
+  vpc_id      = aws_vpc.main.id
+
+  health_check {
+    enabled             = true
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+
+  tags = {
+    Name = "restaurant"
+  }
+}
+
+resource "aws_lb" "restaurant" {
+  name               = "restaurant"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = [aws_subnet.main.id, aws_subnet.secondary.id]
+
+  tags = {
+    Name = "restaurant"
+  }
+}
+
+resource "aws_lb_listener" "restaurant" {
+  load_balancer_arn = aws_lb.restaurant.arn
+  port              = 8081
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.restaurant.arn
+  }
+}
+
+resource "aws_autoscaling_group" "restaurant" {
+  name                      = "restaurant"
+  min_size                  = 1
+  max_size                  = 5
+  desired_capacity          = 3
+  vpc_zone_identifier       = [aws_subnet.main.id, aws_subnet.secondary.id]
+  target_group_arns         = [aws_lb_target_group.restaurant.arn]
+  health_check_type         = "ELB"
+  wait_for_capacity_timeout = "0"
+
+  launch_template {
+    id      = aws_launch_template.restaurant.id
+    version = tostring(aws_launch_template.restaurant.latest_version)
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "restaurant"
+    propagate_at_launch = true
+  }
+
+  depends_on = [
+    aws_db_instance.restaurant,
+    aws_elasticache_replication_group.redis,
+    aws_s3_bucket.uploads,
+    aws_sns_topic.events,
+    aws_sqs_queue.events,
+    aws_lb_listener.restaurant,
   ]
 }

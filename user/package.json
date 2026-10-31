@@ -6,7 +6,8 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "build": "npm run build:aws && nest build",
+    "build": "npm run build:libs && npm run build:aws && nest build",
+    "build:libs": "npm --prefix ../libs run build",
     "build:aws": "npm --prefix ../aws run build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
@@ -27,6 +28,7 @@
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/typeorm": "^12.0.2",
     "@restaurant/aws": "file:../aws",
+    "@restaurant/geolocation": "file:../libs",
     "bcrypt": "^6.0.0",
     "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",

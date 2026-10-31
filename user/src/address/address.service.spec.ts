@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { GeolocationModule } from '@restaurant/geolocation';
 import { AddressService } from './address.service';
 
 describe('AddressService', () => {
@@ -6,6 +7,7 @@ describe('AddressService', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
+      imports: [GeolocationModule],
       providers: [AddressService],
     }).compile();
 
