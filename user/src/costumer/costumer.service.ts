@@ -2,18 +2,18 @@ import { Injectable } from '@nestjs/common';
 import { CreateCostumerDto } from './dto/create-costumer.dto';
 import { UpdateCostumerDto } from './dto/update-costumer.dto';
 import { DataSource } from 'typeorm';
-import * as bcrypt from "bcrypt"
+import * as bcrypt from 'bcrypt'
 import { User, userStatus } from 'src/users/entities/user.entity';
 import { Costumer } from './entities/costumer.entity';
 import { Address } from 'src/address/entities/address.entity';
-import { AddressService } from 'src/address/address.service';
+import { GeolocationService } from '@restaurant/geolocation';
 
 @Injectable()
 export class CostumerService {
   constructor(
     private readonly dataSource: DataSource,
-    private readonly addressService: AddressService,
-  ){}
+    private readonly geolocationService: GeolocationService,
+  ) {}
 
   async createUserCostumer(dto: CreateCostumerDto) {
 
@@ -38,37 +38,33 @@ export class CostumerService {
       })
       await manager.save(costumerUser);
 
-      const responseAddress = await this.addressService.findAddressByCep(dto.costumer.address.postalCode);
+      const addressData = await this.geolocationService.findAddressByCep(dto.costumer.address.postalCode);
 
-      if(!responseAddress) {
+      if(!addressData) {
         throw new Error("CEP não encontrado");
       }
 
-      const addressData = await responseAddress.json()
-
-      const cordinates = await this.addressService.findCordByAddress({ 
+      const cordinates = await this.geolocationService.findCordByAddress({ 
         street: addressData.logradouro,
         number: dto.costumer.address.number,
         city: addressData.localidade,
         state: addressData.uf,
       })
 
-      if (responseAddress) {
-          const addressUser = manager.create(Address, {
-            street: addressData.logradouro,
-            number: dto.costumer.address.number,
-            city: addressData.localidade,
-            state: addressData.uf,
-            postalCode: dto.costumer.address.postalCode,
-            latitude: cordinates?.latitude,
-            longitude: cordinates?.longitude,
-            costumer: costumerUser
-        })
-        
-        await manager.save(addressUser)
+      const addressUser = manager.create(Address, {
+        street: addressData.logradouro,
+        number: dto.costumer.address.number,
+        city: addressData.localidade,
+        state: addressData.uf,
+        postalCode: dto.costumer.address.postalCode,
+        latitude: cordinates?.latitude,
+        longitude: cordinates?.longitude,
+        costumer: costumerUser
+      })
 
-        return { user, costumerUser }
-      }
+      await manager.save(addressUser)
+
+      return { user, costumerUser }
     })
     
   }

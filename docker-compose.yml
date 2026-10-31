@@ -7,6 +7,7 @@ services:
       - "17001-17099:17001-17099"
       - "16379-16399:16379-16399"
       - "8080:8080"
+      - "8081:8081"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - floci-data:/app/data
@@ -31,11 +32,21 @@ services:
     networks:
       - default
 
-  app-image:
-    image: restaurant-app:latest
+  user-image:
+    image: user-app:latest
     build:
       context: .
       dockerfile: user/DockerFile
+    entrypoint: ["/bin/true"]
+    restart: "no"
+    networks:
+      - default
+
+  restaurant-image:
+    image: restaurant-app:latest
+    build:
+      context: .
+      dockerfile: restaurant/Dockerfile
     entrypoint: ["/bin/true"]
     restart: "no"
     networks:
@@ -60,7 +71,9 @@ services:
     depends_on:
       floci:
         condition: service_started
-      app-image:
+      user-image:
+        condition: service_completed_successfully
+      restaurant-image:
         condition: service_completed_successfully
     networks:
       - default

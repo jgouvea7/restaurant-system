@@ -36,35 +36,55 @@ O domínio é dividido em três microsserviços:
 | --- | --- | --- |
 | `user` | Usuários, clientes, entregadores e endereços | Implementado |
 | `auth` | Autenticação e autorização | Estrutura inicial |
-| `restaurant` | Restaurantes, cardápios e pedidos | Estrutura inicial |
+| `restaurant` | Restaurantes, cardápios e pedidos | Em implementação |
 
-Cada microsserviço é planejado para ter seu próprio banco (`database per service`), sua própria imagem/AMI, seu próprio ALB e um Auto Scaling Group com 3 réplicas. O serviço `user` já roda nesse modelo; os demais seguem o mesmo padrão.
+Cada microsserviço tem seu próprio banco (`database per service`), sua própria imagem/AMI, seu próprio ALB e um Auto Scaling Group com 3 réplicas. Os serviços `user` e `restaurant` já rodam nesse modelo; `auth` segue o mesmo padrão quando for implementado.
 
 ```mermaid
 flowchart TB
-    Client[Cliente] --> ALB[ALB :8080]
-    ALB --> ASG[Auto Scaling Group<br/>desired = 3]
+    Client[Cliente]
+
+    Client --> UserALB[ALB user :8080]
+    Client --> RestaurantALB[ALB restaurant :8081]
 
     subgraph UserService[user]
-        ASG --> U1[user #1]
-        ASG --> U2[user #2]
-        ASG --> U3[user #3]
+        UserALB --> U1[user #1]
+        UserALB --> U2[user #2]
+        UserALB --> U3[user #3]
     end
 
-    U1 --> DB[(PostgreSQL<br/>restaurant-user-db)]
-    U2 --> DB
-    U3 --> DB
+    subgraph RestaurantService[restaurant]
+        RestaurantALB --> R1[restaurant #1]
+        RestaurantALB --> R2[restaurant #2]
+        RestaurantALB --> R3[restaurant #3]
+    end
 
-    U1 --> Redis[(Redis)]
+    U1 --> UserDB[(PostgreSQL<br/>user-db)]
+    U2 --> UserDB
+    U3 --> UserDB
+
+    R1 --> RestaurantDB[(PostgreSQL<br/>restaurant-db)]
+    R2 --> RestaurantDB
+    R3 --> RestaurantDB
+
+    U1 --> Redis[(Redis cache)]
     U2 --> Redis
     U3 --> Redis
 
-    U1 --> S3[(S3<br/>restaurant-uploads)]
+    R1 --> Redis
+    R2 --> Redis
+    R3 --> Redis
+
+    U1 --> S3[(S3 uploads)]
     U2 --> S3
     U3 --> S3
 
-    U1 --> SNS[[SNS restaurant-events]]
-    SNS -. assinatura .-> SQS[[SQS restaurant-events]]
+    R1 --> S3
+    R2 --> S3
+    R3 --> S3
+
+    U1 --> SNS[[SNS events]]
+    SNS -. assinatura .-> SQS[[SQS events]]
 ```
 
 O diagrama também está disponível em `docs/mermaid-diagram.png`.
@@ -75,13 +95,13 @@ O diagrama também está disponível em `docs/mermaid-diagram.png`.
 | --- | --- |
 | VPC | `10.20.0.0/16` |
 | Subnets | `10.20.1.0/24` (us-east-1a) e `10.20.2.0/24` (us-east-1b) |
-| ALB | Application Load Balancer em `localhost:8080` |
-| Auto Scaling | `min=1`, `desired=3`, `max=5` |
-| RDS | PostgreSQL `restaurant-user-db` na porta `17001` |
-| ElastiCache | Redis `restaurant-cache` na porta `16379` |
-| S3 | Bucket `restaurant-uploads` |
-| SNS | Tópico `restaurant-events` |
-| SQS | Fila `restaurant-events` |
+| ALB | `user` em `localhost:8080` e `restaurant` em `localhost:8081` |
+| Auto Scaling | `user` e `restaurant` com `min=1`, `desired=3`, `max=5` |
+| RDS | PostgreSQL `user-db` na porta `17001` e `restaurant-db` na porta `17002` |
+| ElastiCache | Redis `cache` na porta `16379` |
+| S3 | Bucket `uploads` |
+| SNS | Tópico `events` |
+| SQS | Fila `events` |
 
 ### Portas locais
 
@@ -89,6 +109,7 @@ O diagrama também está disponível em `docs/mermaid-diagram.png`.
 | --- | --- |
 | `4566` | API do Floci |
 | `8080` | ALB do microsserviço `user` |
+| `8081` | ALB do microsserviço `restaurant` |
 | `17001-17099` | Proxies de PostgreSQL (RDS) |
 | `16379-16399` | Proxies de Redis (ElastiCache) |
 | `2200-2299` | SSH das instâncias EC2 emuladas |
@@ -109,8 +130,8 @@ As aplicações escutam em `3000` dentro das instâncias. O acesso externo passa
 │   ├── outputs.tf
 │   ├── provider.tf
 │   └── variables.tf
-├── restaurant/            # Microsserviço de restaurante (estrutura inicial)
-├── user/                  # Microsserviço de usuários (implementado)
+├── restaurant/            # Microsserviço de restaurante
+├── user/                  # Microsserviço de usuários
 ├── docker-compose.yml
 └── README.md
 ```
@@ -134,7 +155,7 @@ docker compose up -d --build
 Esse comando:
 
 1. Sobe o Floci.
-2. Constrói a imagem `restaurant-app:latest`.
+2. Constrói as imagens `user-app:latest` e `restaurant-app:latest`.
 3. Executa `terraform init` e `terraform apply` dentro do container.
 
 Acompanhe a infraestrutura:
@@ -147,6 +168,7 @@ Quando o apply terminar:
 
 ```bash
 curl http://localhost:8080
+curl http://localhost:8081
 # Hello World!
 ```
 
@@ -161,15 +183,17 @@ export AWS_DEFAULT_REGION=us-east-1
 # No PowerShell: $env:AWS_ACCESS_KEY_ID="test"; $env:AWS_SECRET_ACCESS_KEY="test"; $env:AWS_DEFAULT_REGION="us-east-1"
 
 aws --endpoint-url http://localhost:4566 autoscaling describe-auto-scaling-groups \
-  --auto-scaling-group-names restaurant-user
+  --auto-scaling-group-names user restaurant
 
 TG_ARN=$(aws --endpoint-url http://localhost:4566 elbv2 describe-target-groups \
-  --names restaurant-user \
+  --names user \
   --query 'TargetGroups[0].TargetGroupArn' \
   --output text)
 
 aws --endpoint-url http://localhost:4566 elbv2 describe-target-health \
   --target-group-arn "$TG_ARN"
+
+# Repita trocando "user" por "restaurant" para checar o outro serviço.
 ```
 
 ### Reaplicar mudanças de infraestrutura
@@ -180,12 +204,17 @@ O serviço `terraform` do Compose é de execução única. Depois de alterar arq
 docker compose run --rm terraform
 ```
 
-### Desenvolvimento local do serviço `user`
+### Desenvolvimento local dos serviços
 
-Com o Floci e o banco no ar:
+Com o Floci e os bancos no ar:
 
 ```bash
 cd user
+npm install
+npm test
+npm run start:dev
+
+cd ../restaurant
 npm install
 npm test
 npm run start:dev
@@ -213,7 +242,7 @@ docker compose down -v
 
 ## Como adicionar um novo microsserviço
 
-O padrão usado pelo `user` deve ser repetido para os próximos serviços:
+O padrão usado por `user` e `restaurant` deve ser repetido para os próximos serviços:
 
 1. **Crie a aplicação** (por exemplo, `payment/`) com NestJS e um `Dockerfile`.
    Use `ENTRYPOINT ["node", "dist/main.js"]`. O Floci preserva o `ENTRYPOINT` e substitui o `CMD` por `tail -f /dev/null`; por isso, um Dockerfile que só usa `CMD` não inicia a aplicação.
@@ -224,17 +253,17 @@ O padrão usado pelo `user` deve ser repetido para os próximos serviços:
    - `aws_lb_target_group` na porta `3000`;
    - `aws_lb` e `aws_lb_listener` em uma porta livre (`8081`, `8082`, ...);
    - `aws_autoscaling_group` com `desired_capacity = 3`.
-5. **Crie o banco do serviço** com um `aws_db_instance` próprio (`restaurant-payment-db`) e o respectivo `db_name`.
+5. **Crie o banco do serviço** com um `aws_db_instance` próprio (`payment-db`) e o respectivo `db_name`.
 6. **Use o S3 compartilhado** com um prefixo do serviço, por exemplo `payment/`.
 7. **Configure as variáveis de ambiente** `DB_HOST=floci`, `DB_PORT`, `DB_NAME`, `AWS_ENDPOINT_URL=http://floci:4566`, etc.
 8. **Exponha a porta do novo ALB** no `docker-compose.yml` e adicione um output com a URL.
 
 ## Estratégia de S3
 
-O projeto usa **um bucket compartilhado**, `restaurant-uploads`, com prefixos por serviço:
+O projeto usa **um bucket compartilhado**, `uploads`, com prefixos por serviço:
 
 ```text
-restaurant-uploads/
+uploads/
 ├── user/
 ├── auth/
 └── restaurant/
@@ -255,7 +284,8 @@ O Floci é um emulador, não a AWS real. Alguns pontos importantes:
 
 ## Próximos passos
 
-- Implementar `auth` e `restaurant` com seus próprios bancos e ALBs.
+- Implementar `auth` com seu próprio banco e ALB.
+- Completar a lógica de negócio de `restaurant` (restaurantes, cardápios e pedidos).
 - Criar a subscription SNS → SQS e o consumer de eventos.
 - Adicionar health checks específicos (`/health`) e observabilidade.
 - Separar ambientes (`dev`/`staging`) com workspaces do Terraform.

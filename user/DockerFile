@@ -2,11 +2,13 @@ FROM node:22-alpine AS build
 WORKDIR /app
 
 COPY aws ./aws
+COPY libs ./libs
 COPY user ./user
 
 RUN cd aws && npm install && npm run build
+RUN cd libs && npm install && npm run build
 RUN cd user && npm install && npm run build
-RUN cd aws && npm prune --omit=dev && cd ../user && npm prune --omit=dev
+RUN cd aws && npm prune --omit=dev && cd ../libs && npm prune --omit=dev && cd ../user && npm prune --omit=dev
 
 FROM node:22-alpine AS runner
 WORKDIR /app
@@ -17,7 +19,7 @@ ENV NODE_ENV=production \
     DB_PORT=17001 \
     DB_USER=restaurant \
     DB_PASSWORD=restaurant1234 \
-    DB_NAME=restaurant_user \
+    DB_NAME=users \
     AWS_ENDPOINT_URL=http://floci:4566 \
     AWS_DEFAULT_REGION=us-east-1 \
     AWS_ACCESS_KEY_ID=restaurant \
@@ -26,6 +28,9 @@ ENV NODE_ENV=production \
 COPY --from=build /app/aws/package.json ./aws/package.json
 COPY --from=build /app/aws/dist ./aws/dist
 COPY --from=build /app/aws/node_modules ./aws/node_modules
+COPY --from=build /app/libs/package.json ./libs/package.json
+COPY --from=build /app/libs/dist ./libs/dist
+COPY --from=build /app/libs/node_modules ./libs/node_modules
 COPY --from=build /app/user/package.json ./user/package.json
 COPY --from=build /app/user/node_modules ./user/node_modules
 COPY --from=build /app/user/dist ./user/dist
