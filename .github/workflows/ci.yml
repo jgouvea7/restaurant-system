@@ -28,9 +28,11 @@ jobs:
           - service: user
             directory: user
             test: true
+            shared: true
           - service: restaurant
             directory: restaurant
             test: true
+            shared: true
           - service: aws
             directory: aws
             test: false
@@ -55,6 +57,20 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Install shared packages
+        if: matrix.shared
+        working-directory: .
+        run: |
+          npm --prefix libs ci
+          npm --prefix aws ci
+
+      - name: Build shared packages
+        if: matrix.shared
+        working-directory: .
+        run: |
+          npm --prefix libs run build
+          npm --prefix aws run build
 
       - name: Build
         run: npm run build
