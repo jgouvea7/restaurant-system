@@ -1,4 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { GeolocationService } from '@restaurant/geolocation';
+import { DataSource } from 'typeorm';
 import { RestaurantsService } from './restaurants.service';
 
 describe('RestaurantsService', () => {
@@ -6,7 +8,11 @@ describe('RestaurantsService', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [RestaurantsService],
+      providers: [
+        RestaurantsService,
+        { provide: DataSource, useValue: {} },
+        { provide: GeolocationService, useValue: {} },
+      ],
     }).compile();
 
     service = module.get<RestaurantsService>(RestaurantsService);
