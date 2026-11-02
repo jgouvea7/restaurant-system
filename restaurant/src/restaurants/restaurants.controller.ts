@@ -1,4 +1,13 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  Query,
+} from '@nestjs/common';
 import { RestaurantsService } from './restaurants.service';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
 import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
@@ -15,6 +24,21 @@ export class RestaurantsController {
   @Get()
   findAll() {
     return this.restaurantsService.findAll();
+  }
+
+  @Get('nearby')
+  findNearby(
+    @Query('latitude') latitude: string,
+    @Query('longitude') longitude: string,
+    @Query('radiusKm') radiusKm?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.restaurantsService.findNearby({
+      latitude: Number(latitude),
+      longitude: Number(longitude),
+      radiusKm: radiusKm === undefined ? undefined : Number(radiusKm),
+      limit: limit === undefined ? undefined : Number(limit),
+    });
   }
 
   @Get(':id/owner')

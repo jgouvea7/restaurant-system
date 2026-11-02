@@ -6,7 +6,9 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "build": "nest build",
+    "build": "npm run build:libs && npm run build:aws && nest build",
+    "build:libs": "npm --prefix ../libs run build",
+    "build:aws": "npm --prefix ../aws run build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",

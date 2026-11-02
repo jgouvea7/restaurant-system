@@ -172,6 +172,39 @@ resource "aws_sqs_queue" "events" {
   }
 }
 
+data "aws_iam_policy_document" "events_queue" {
+  statement {
+    sid    = "AllowSNSPublish"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["sns.amazonaws.com"]
+    }
+
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.events.arn]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values   = [aws_sns_topic.events.arn]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "events" {
+  queue_url = aws_sqs_queue.events.id
+  policy    = data.aws_iam_policy_document.events_queue.json
+}
+
+resource "aws_sns_topic_subscription" "events" {
+  topic_arn            = aws_sns_topic.events.arn
+  protocol             = "sqs"
+  endpoint             = aws_sqs_queue.events.arn
+  raw_message_delivery = true
+}
+
 resource "aws_launch_template" "user" {
   name                   = "user"
   image_id               = "ami-0abc1234567890def"

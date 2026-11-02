@@ -20,7 +20,7 @@ A AWS é simulada localmente com o [Floci](https://floci.io/), um emulador open 
 | --- | --- |
 | Aplicação | NestJS 11, TypeScript, TypeORM |
 | Banco relacional | PostgreSQL 16 |
-| Cache | Redis 7 (ElastiCache) |
+| Cache | Redis 7 (ElastiCache) com Redis GEO |
 | Mensageria | SNS + SQS |
 | Arquivos | S3 |
 | Infraestrutura | Terraform (provider AWS 6.x) |
@@ -136,7 +136,53 @@ As aplicações escutam em `3000` dentro das instâncias. O acesso externo passa
 └── README.md
 ```
 
-O pacote `aws/` centraliza a integração com S3, SNS, SQS e EC2 para ser reutilizado pelos serviços.
+O pacote `aws/` centraliza a integração com S3, SNS, SQS, EC2 e ElastiCache (Redis) para ser reutilizado pelos serviços.
+
+### Redis GEO
+
+Os restaurantes são indexados no Redis GEO sob a chave `restaurants:geo` sempre que são criados com latitude/longitude. A busca por restaurantes próximos usa o comando `GEOSEARCH` do Redis 7 e devolve os resultados ordenados pela distância:
+
+```bash
+curl "http://localhost:8081/restaurants/nearby?latitude=-23.5614&longitude=-46.6559&radiusKm=5&limit=10"
+```
+
+A conexão é configurada por `REDIS_HOST` e `REDIS_PORT` (padrão `localhost:16379`). O `ElastiCacheService`, em `aws/elastic-cache/`, expõe `addLocation`, `addLocations`, `findNearby`, `getPosition`, `removeLocation` e operações de conjunto (`addToSet`, `removeFromSet`, `getSetMembers`) para reutilização em outros serviços.
+
+### Entregadores
+
+A localização dos entregadores fica em `couriers:geo` e a disponibilidade em `couriers:available`. A busca de entregadores próximos cruza os dois conjuntos e retorna apenas quem está disponível:
+
+```bash
+# Atualizar a localização
+curl -X PATCH http://localhost:8080/courier/COURIER_ID/location \
+  -H "Content-Type: application/json" \
+  -d '{"latitude":-23.5614,"longitude":-46.6559}'
+
+# Definir disponibilidade
+curl -X PATCH http://localhost:8080/courier/COURIER_ID/availability \
+  -H "Content-Type: application/json" \
+  -d '{"available":true}'
+
+# Buscar entregadores disponíveis próximos
+curl "http://localhost:8080/courier/nearby?latitude=-23.5614&longitude=-46.6559&radiusKm=5&limit=10"
+```
+
+O endpoint antigo `POST /courier/:id/available` continua disponível e alterna o estado atual.
+
+### Eventos
+
+O pacote `aws/events/` define o envelope `DomainEvent`, os tipos de evento e os serviços `EventPublisherService` (SNS) e `EventConsumerService` (SQS). O tópico e a fila são provisionados pelo Terraform, com assinatura SNS → SQS e `raw_message_delivery` habilitado.
+
+Eventos publicados nesta fase:
+
+| Evento | Origem |
+| --- | --- |
+| `restaurant.created` | `restaurant` |
+| `restaurant.deleted` | `restaurant` |
+| `courier.location.updated` | `user` |
+| `courier.availability.changed` | `user` |
+
+As variáveis `SNS_TOPIC_ARN` e `SQS_QUEUE_URL` configuram os clientes. O `restaurant` consulta o serviço de usuários por `USER_SERVICE_URL` (padrão `http://floci:8080`).
 
 ## Como executar
 
@@ -224,6 +270,7 @@ npm run start:dev
 
 ```bash
 cd user && npm test
+cd ../restaurant && npm test
 docker compose run --rm terraform sh -c "terraform fmt -check -recursive && terraform validate"
 docker compose config --quiet
 ```
@@ -255,7 +302,7 @@ O padrão usado por `user` e `restaurant` deve ser repetido para os próximos se
    - `aws_autoscaling_group` com `desired_capacity = 3`.
 5. **Crie o banco do serviço** com um `aws_db_instance` próprio (`payment-db`) e o respectivo `db_name`.
 6. **Use o S3 compartilhado** com um prefixo do serviço, por exemplo `payment/`.
-7. **Configure as variáveis de ambiente** `DB_HOST=floci`, `DB_PORT`, `DB_NAME`, `AWS_ENDPOINT_URL=http://floci:4566`, etc.
+7. **Configure as variáveis de ambiente** `DB_HOST=floci`, `DB_PORT`, `DB_NAME`, `REDIS_HOST=floci`, `REDIS_PORT=16379`, `AWS_ENDPOINT_URL=http://floci:4566`, etc.
 8. **Exponha a porta do novo ALB** no `docker-compose.yml` e adicione um output com a URL.
 
 ## Estratégia de S3
@@ -285,8 +332,5 @@ O Floci é um emulador, não a AWS real. Alguns pontos importantes:
 ## Próximos passos
 
 - Implementar `auth` com seu próprio banco e ALB.
-- Completar a lógica de negócio de `restaurant` (restaurantes, cardápios e pedidos).
-- Criar a subscription SNS → SQS e o consumer de eventos.
+- Implementar o consumer de eventos (SQS) e os casos de uso assíncronos.
 - Adicionar health checks específicos (`/health`) e observabilidade.
-- Separar ambientes (`dev`/`staging`) com workspaces do Terraform.
-- Evoluir o CI para validar testes, `terraform fmt` e `terraform validate`.
