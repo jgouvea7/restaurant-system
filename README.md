@@ -30,15 +30,16 @@ A AWS é simulada localmente com o [Floci](https://floci.io/), um emulador open 
 
 ## Arquitetura
 
-O domínio é dividido em três microsserviços:
+O domínio é dividido em quatro microsserviços:
 
 | Serviço | Responsabilidade | Status |
 | --- | --- | --- |
 | `user` | Usuários, clientes, entregadores e endereços | Implementado |
 | `auth` | Autenticação e autorização | Estrutura inicial |
-| `restaurant` | Restaurantes, cardápios e pedidos | Em implementação |
+| `restaurant` | Restaurantes, cardápios e pedidos | Implementado |
+| `payment` | Pagamentos simulados e publicação do resultado | Implementado |
 
-Cada microsserviço tem seu próprio banco (`database per service`), sua própria imagem/AMI, seu próprio ALB e um Auto Scaling Group com 3 réplicas. Os serviços `user` e `restaurant` já rodam nesse modelo; `auth` segue o mesmo padrão quando for implementado.
+Cada microsserviço tem seu próprio banco (`database per service`), sua própria imagem/AMI, seu próprio ALB e um Auto Scaling Group com 3 réplicas. Os serviços `user`, `restaurant` e `payment` já rodam nesse modelo; `auth` segue o mesmo padrão quando for implementado.
 
 ```mermaid
 flowchart TB
@@ -46,6 +47,7 @@ flowchart TB
 
     Client --> UserALB[ALB user :8080]
     Client --> RestaurantALB[ALB restaurant :8081]
+    Client --> PaymentALB[ALB payment :8082]
 
     subgraph UserService[user]
         UserALB --> U1[user #1]
@@ -59,6 +61,12 @@ flowchart TB
         RestaurantALB --> R3[restaurant #3]
     end
 
+    subgraph PaymentService[payment]
+        PaymentALB --> P1[payment #1]
+        PaymentALB --> P2[payment #2]
+        PaymentALB --> P3[payment #3]
+    end
+
     U1 --> UserDB[(PostgreSQL<br/>user-db)]
     U2 --> UserDB
     U3 --> UserDB
@@ -66,6 +74,10 @@ flowchart TB
     R1 --> RestaurantDB[(PostgreSQL<br/>restaurant-db)]
     R2 --> RestaurantDB
     R3 --> RestaurantDB
+
+    P1 --> PaymentDB[(PostgreSQL<br/>payment-db)]
+    P2 --> PaymentDB
+    P3 --> PaymentDB
 
     U1 --> Redis[(Redis cache)]
     U2 --> Redis
@@ -84,7 +96,10 @@ flowchart TB
     R3 --> S3
 
     U1 --> SNS[[SNS events]]
-    SNS -. assinatura .-> SQS[[SQS events]]
+    R1 --> SNS
+    P1 --> SNS
+    SNS -. order.created .-> PaymentSQS[[SQS payment-events]]
+    SNS -. payment.approved/rejected .-> RestaurantSQS[[SQS restaurant-events]]
 ```
 
 O diagrama também está disponível em `docs/mermaid-diagram.png`.
@@ -95,13 +110,13 @@ O diagrama também está disponível em `docs/mermaid-diagram.png`.
 | --- | --- |
 | VPC | `10.20.0.0/16` |
 | Subnets | `10.20.1.0/24` (us-east-1a) e `10.20.2.0/24` (us-east-1b) |
-| ALB | `user` em `localhost:8080` e `restaurant` em `localhost:8081` |
-| Auto Scaling | `user` e `restaurant` com `min=1`, `desired=3`, `max=5` |
-| RDS | PostgreSQL `user-db` na porta `17001` e `restaurant-db` na porta `17002` |
+| ALB | `user` em `localhost:8080`, `restaurant` em `localhost:8081` e `payment` em `localhost:8082` |
+| Auto Scaling | `user`, `restaurant` e `payment` com `min=1`, `desired=3`, `max=5` |
+| RDS | PostgreSQL `user-db` na porta `17001`, `restaurant-db` na porta `17002` e `payment-db` na porta `17003` |
 | ElastiCache | Redis `cache` na porta `16379` |
 | S3 | Bucket `uploads` |
 | SNS | Tópico `events` |
-| SQS | Fila `events` |
+| SQS | Filas `restaurant-events` e `payment-events` com filtros por `eventType` |
 
 ### Portas locais
 
@@ -110,6 +125,7 @@ O diagrama também está disponível em `docs/mermaid-diagram.png`.
 | `4566` | API do Floci |
 | `8080` | ALB do microsserviço `user` |
 | `8081` | ALB do microsserviço `restaurant` |
+| `8082` | ALB do microsserviço `payment` |
 | `17001-17099` | Proxies de PostgreSQL (RDS) |
 | `16379-16399` | Proxies de Redis (ElastiCache) |
 | `2200-2299` | SSH das instâncias EC2 emuladas |
@@ -130,6 +146,7 @@ As aplicações escutam em `3000` dentro das instâncias. O acesso externo passa
 │   ├── outputs.tf
 │   ├── provider.tf
 │   └── variables.tf
+├── payment/               # Microsserviço de pagamentos
 ├── restaurant/            # Microsserviço de restaurante
 ├── user/                  # Microsserviço de usuários
 ├── docker-compose.yml
@@ -169,9 +186,47 @@ curl "http://localhost:8080/courier/nearby?latitude=-23.5614&longitude=-46.6559&
 
 O endpoint antigo `POST /courier/:id/available` continua disponível e alterna o estado atual.
 
+### Pedidos e pagamentos
+
+O `restaurant` expõe CRUD de produtos e pedidos. Ao criar um pedido, os itens guardam um snapshot de nome e preço do produto, e o pedido nasce como `pending_payment`:
+
+```bash
+curl -X POST http://localhost:8081/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "restaurantId": "RESTAURANT_ID",
+    "costumerUserId": "CUSTOMER_ID",
+    "paymentMethod": "pix",
+    "deliveryAddress": "Rua Exemplo, 123",
+    "items": [{ "productId": "PRODUCT_ID", "quantity": 2 }]
+  }'
+
+curl "http://localhost:8081/orders?restaurantId=RESTAURANT_ID"
+curl -X PATCH http://localhost:8081/orders/ORDER_ID/status \
+  -H "Content-Type: application/json" \
+  -d '{"status":"preparing"}'
+```
+
+O `payment` consome `order.created` e aprova automaticamente pedidos até `PAYMENT_APPROVAL_LIMIT` (padrão `1000`). O resultado é publicado como `payment.approved` ou `payment.rejected`; o `restaurant` consome esses eventos e atualiza o pedido para `confirmed` ou `payment_rejected`. O pagamento pode ser consultado por:
+
+```bash
+curl http://localhost:8082/payments/ORDER_ID
+```
+
+Transições manuais permitidas: `pending_payment` → `cancelled`; `confirmed` → `preparing` → `ready` → `out_for_delivery` → `delivered`; `confirmed`, `preparing`, `ready` e `out_for_delivery` também podem ir para `cancelled`. `delivered`, `cancelled` e `payment_rejected` são estados finais.
+
+O processamento é pelo menos uma vez, então `PaymentsService` ignora pedidos que já possuem pagamento e `OrdersService` ignora eventos de pagamento para pedidos que não estão mais em `pending_payment`.
+
 ### Eventos
 
-O pacote `aws/events/` define o envelope `DomainEvent`, os tipos de evento e os serviços `EventPublisherService` (SNS) e `EventConsumerService` (SQS). O tópico e a fila são provisionados pelo Terraform, com assinatura SNS → SQS e `raw_message_delivery` habilitado.
+O pacote `aws/events/` define o envelope `DomainEvent`, os tipos de evento e os serviços `EventPublisherService` (SNS) e `EventConsumerService` (SQS). O `EventConsumerService` usa long polling com `start()`/`stop()` e é iniciado no `onApplicationBootstrap` de cada consumer.
+
+O Terraform provisiona duas filas com filtros por `eventType`:
+
+| Fila | Eventos | Consumidor |
+| --- | --- | --- |
+| `payment-events` | `order.created` | `payment` |
+| `restaurant-events` | `payment.approved`, `payment.rejected` | `restaurant` |
 
 Eventos publicados nesta fase:
 
@@ -181,6 +236,10 @@ Eventos publicados nesta fase:
 | `restaurant.deleted` | `restaurant` |
 | `courier.location.updated` | `user` |
 | `courier.availability.changed` | `user` |
+| `order.created` | `restaurant` |
+| `order.status.changed` | `restaurant` |
+| `payment.approved` | `payment` |
+| `payment.rejected` | `payment` |
 
 As variáveis `SNS_TOPIC_ARN` e `SQS_QUEUE_URL` configuram os clientes. O `restaurant` consulta o serviço de usuários por `USER_SERVICE_URL` (padrão `http://floci:8080`).
 
@@ -201,7 +260,7 @@ docker compose up -d --build
 Esse comando:
 
 1. Sobe o Floci.
-2. Constrói as imagens `user-app:latest` e `restaurant-app:latest`.
+2. Constrói as imagens `user-app:latest`, `restaurant-app:latest` e `payment-app:latest`.
 3. Executa `terraform init` e `terraform apply` dentro do container.
 
 Acompanhe a infraestrutura:
@@ -215,6 +274,7 @@ Quando o apply terminar:
 ```bash
 curl http://localhost:8080
 curl http://localhost:8081
+curl http://localhost:8082
 # Hello World!
 ```
 
@@ -229,7 +289,7 @@ export AWS_DEFAULT_REGION=us-east-1
 # No PowerShell: $env:AWS_ACCESS_KEY_ID="test"; $env:AWS_SECRET_ACCESS_KEY="test"; $env:AWS_DEFAULT_REGION="us-east-1"
 
 aws --endpoint-url http://localhost:4566 autoscaling describe-auto-scaling-groups \
-  --auto-scaling-group-names user restaurant
+  --auto-scaling-group-names user restaurant payment
 
 TG_ARN=$(aws --endpoint-url http://localhost:4566 elbv2 describe-target-groups \
   --names user \
@@ -239,7 +299,7 @@ TG_ARN=$(aws --endpoint-url http://localhost:4566 elbv2 describe-target-groups \
 aws --endpoint-url http://localhost:4566 elbv2 describe-target-health \
   --target-group-arn "$TG_ARN"
 
-# Repita trocando "user" por "restaurant" para checar o outro serviço.
+# Repita trocando "user" por "restaurant" ou "payment" para checar os outros serviços.
 ```
 
 ### Reaplicar mudanças de infraestrutura
@@ -264,6 +324,11 @@ cd ../restaurant
 npm install
 npm test
 npm run start:dev
+
+cd ../payment
+npm install
+npm test
+npm run start:dev
 ```
 
 ### Testes e validações
@@ -271,9 +336,21 @@ npm run start:dev
 ```bash
 cd user && npm test
 cd ../restaurant && npm test
+cd ../payment && npm test
+cd ../aws && npm run build
 docker compose run --rm terraform sh -c "terraform fmt -check -recursive && terraform validate"
 docker compose config --quiet
 ```
+
+### CI/CD e auto-merge
+
+Pull requests do próprio repositório e fora de draft entram no fluxo automático:
+
+1. O workflow `CI` roda `node`, `terraform` e `compose`.
+2. Se todos passarem, o job `Auto merge` faz o merge com commit de merge e apaga a branch remota.
+3. O workflow `Cleanup merged branches` roda semanalmente e também pode ser disparado manualmente para apagar branches `feat/*`, `fix/*`, `chore/*`, `docs/*`, `refactor/*` e `test/*` já mescladas em `main`.
+
+O auto-merge usa o `GITHUB_TOKEN`, então o repositório precisa permitir escrita do workflow. Proteções de branch que exigem revisão humana ou checks externos podem impedir o merge automático. O repositório também está configurado com `delete_branch_on_merge`, então merges manuais apagam a branch automaticamente.
 
 ### Derrubar o ambiente
 
@@ -332,5 +409,5 @@ O Floci é um emulador, não a AWS real. Alguns pontos importantes:
 ## Próximos passos
 
 - Implementar `auth` com seu próprio banco e ALB.
-- Implementar o consumer de eventos (SQS) e os casos de uso assíncronos.
+- Adicionar outbox e idempotência persistente para eventos críticos.
 - Adicionar health checks específicos (`/health`) e observabilidade.

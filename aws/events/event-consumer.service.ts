@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import {
   DeleteMessageCommand,
   ReceiveMessageCommand,
@@ -15,23 +10,73 @@ export interface EventConsumerOptions {
   maxMessages?: number;
   waitTimeSeconds?: number;
   visibilityTimeout?: number;
+  pollIntervalMs?: number;
 }
 
 export type EventHandler = (event: DomainEvent) => Promise<void>;
 
 @Injectable()
-export class EventConsumerService implements OnModuleInit, OnModuleDestroy {
+export class EventConsumerService implements OnModuleDestroy {
   private readonly logger = new Logger(EventConsumerService.name);
-  private client!: SQSClient;
-  private queueUrl?: string;
+  private readonly client: SQSClient;
+  private readonly queueUrl?: string;
+  private running = false;
+  private timer?: ReturnType<typeof setTimeout>;
 
-  onModuleInit(): void {
+  constructor() {
     this.queueUrl = process.env.SQS_QUEUE_URL;
     this.client = new SQSClient(this.buildConfig());
   }
 
   onModuleDestroy(): void {
+    this.stop();
     this.client?.destroy();
+  }
+
+  start(handler: EventHandler, options: EventConsumerOptions = {}): boolean {
+    if (this.running) {
+      return false;
+    }
+
+    if (!this.queueUrl) {
+      this.logger.warn(
+        'SQS_QUEUE_URL nao configurado; consumer nao iniciado',
+      );
+      return false;
+    }
+
+    this.running = true;
+
+    const loop = async () => {
+      if (!this.running) {
+        return;
+      }
+
+      try {
+        await this.receive(handler, options);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(`Falha ao ler a fila SQS: ${message}`);
+      }
+
+      if (this.running) {
+        this.timer = setTimeout(loop, options.pollIntervalMs ?? 1000);
+        this.timer.unref?.();
+      }
+    };
+
+    void loop();
+
+    return true;
+  }
+
+  stop(): void {
+    this.running = false;
+
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
   }
 
   async receive(

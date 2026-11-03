@@ -1,10 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { PublishCommand, SNSClient } from '@aws-sdk/client-sns';
 import {
   DomainEvent,
@@ -13,12 +8,12 @@ import {
 } from './event.types';
 
 @Injectable()
-export class EventPublisherService implements OnModuleInit, OnModuleDestroy {
+export class EventPublisherService implements OnModuleDestroy {
   private readonly logger = new Logger(EventPublisherService.name);
-  private client!: SNSClient;
-  private topicArn?: string;
+  private readonly client: SNSClient;
+  private readonly topicArn?: string;
 
-  onModuleInit(): void {
+  constructor() {
     this.topicArn = process.env.SNS_TOPIC_ARN;
     this.client = new SNSClient(this.buildConfig());
   }
