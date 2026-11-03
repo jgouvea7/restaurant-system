@@ -59,7 +59,7 @@ docker compose config --quiet
 
 - Cada fase usa uma branch própria a partir da `main` atualizada.
 - Abra o PR e use o template com contexto, decisões, tradeoffs, validação e rollback.
-- O CI roda build, testes, Terraform e Compose. Se tudo passar, o job `Auto merge` faz o merge commit e apaga a branch.
+- O CI roda build, testes, Terraform e Compose. Se tudo passar e o PR for aberto pela conta `jgouvea7`, o job `Auto merge` faz o merge commit e apaga a branch. PRs de outras contas precisam de merge manual.
 - Para segurar o merge, mantenha o PR como draft; o auto-merge não roda em drafts.
 - Após o merge, atualize a `main` antes de iniciar a próxima fase.
 - Branches `feat/*`, `fix/*`, `chore/*`, `docs/*`, `refactor/*` e `test/*` já mescladas podem ser limpas pelo workflow `Cleanup merged branches`.

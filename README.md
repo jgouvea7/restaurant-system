@@ -344,10 +344,10 @@ docker compose config --quiet
 
 ### CI/CD e auto-merge
 
-Pull requests do próprio repositório e fora de draft entram no fluxo automático:
+Pull requests abertos pela conta `jgouvea7`, do próprio repositório e fora de draft entram no fluxo automático:
 
 1. O workflow `CI` roda `node`, `terraform` e `compose`.
-2. Se todos passarem, o job `Auto merge` faz o merge com commit de merge e apaga a branch remota.
+2. Se todos passarem, o job `Auto merge` faz o merge com commit de merge e apaga a branch remota. PRs de outras contas não são mergeados automaticamente.
 3. O workflow `Cleanup merged branches` roda semanalmente e também pode ser disparado manualmente para apagar branches `feat/*`, `fix/*`, `chore/*`, `docs/*`, `refactor/*` e `test/*` já mescladas em `main`.
 
 O auto-merge usa o `GITHUB_TOKEN`, então o repositório precisa permitir escrita do workflow. Proteções de branch que exigem revisão humana ou checks externos podem impedir o merge automático. O repositório também está configurado com `delete_branch_on_merge`, então merges manuais apagam a branch automaticamente.
