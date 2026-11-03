@@ -33,6 +33,10 @@ jobs:
             directory: restaurant
             test: true
             shared: true
+          - service: payment
+            directory: payment
+            test: true
+            shared: true
           - service: aws
             directory: aws
             test: false
@@ -78,6 +82,31 @@ jobs:
       - name: Test
         if: matrix.test
         run: npm test -- --runInBand
+
+  auto-merge:
+    name: Auto merge
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: [node, terraform, compose]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Merge PR and delete branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh pr merge "$PR_NUMBER" \
+            --merge \
+            --delete-branch \
+            --match-head-commit "$HEAD_SHA"
 
   terraform:
     name: Terraform

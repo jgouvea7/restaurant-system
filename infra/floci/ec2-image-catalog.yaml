@@ -38,3 +38,16 @@ images:
     rootDeviceType: ebs
     virtualizationType: hvm
     creationDate: "2026-10-20T00:00:00.000Z"
+
+  - imageId: ami-0a1b2c3d4e5f67890
+    aliases:
+      - ami-payment-app
+    dockerImage: payment-app:latest
+    name: payment-app-2026.11
+    description: Payment NestJS API
+    ownerId: "000000000000"
+    architecture: x86_64
+    rootVolumeType: gp3
+    rootDeviceType: ebs
+    virtualizationType: hvm
+    creationDate: "2026-11-03T00:00:00.000Z"

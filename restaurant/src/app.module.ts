@@ -6,6 +6,7 @@ import { RestaurantsModule } from './restaurants/restaurants.module';
 import { RestaurantAddressModule } from './restaurant-address/restaurant-address.module';
 import { ProductsModule } from './products/products.module';
 import { OpeningHourModule } from './opening-hour/opening-hour.module';
+import { OrdersModule } from './orders/orders.module';
 import { GeolocationModule } from '@restaurant/geolocation';
 
 @Module({
@@ -26,6 +27,7 @@ import { GeolocationModule } from '@restaurant/geolocation';
     RestaurantAddressModule,
     ProductsModule,
     OpeningHourModule,
+    OrdersModule,
     GeolocationModule],
   controllers: [AppController],
   providers: [AppService],

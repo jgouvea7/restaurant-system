@@ -10,7 +10,8 @@
 
 - `auth`: autenticação
 - `user`: usuários, clientes, entregadores e proprietários
-- `restaurant`: restaurantes, endereços, horários e produtos
+- `restaurant`: restaurantes, endereços, horários, produtos e pedidos
+- `payment`: pagamentos simulados e publicação de eventos
 - `aws`: integrações compartilhadas com AWS/Floci
 - `libs`: serviços compartilhados, incluindo geolocalização
 - `infra`: infraestrutura Terraform
@@ -57,10 +58,11 @@ docker compose config --quiet
 ## Fluxo de branches e PRs
 
 - Cada fase usa uma branch própria a partir da `main` atualizada.
-- Abra o PR como draft, aguarde o CI e marque como pronto após a validação.
-- Use o template do PR com contexto, decisões, tradeoffs, validação e rollback.
-- Não faça merge sem aprovação explícita.
+- Abra o PR e use o template com contexto, decisões, tradeoffs, validação e rollback.
+- O CI roda build, testes, Terraform e Compose. Se tudo passar, o job `Auto merge` faz o merge commit e apaga a branch.
+- Para segurar o merge, mantenha o PR como draft; o auto-merge não roda em drafts.
 - Após o merge, atualize a `main` antes de iniciar a próxima fase.
+- Branches `feat/*`, `fix/*`, `chore/*`, `docs/*`, `refactor/*` e `test/*` já mescladas podem ser limpas pelo workflow `Cleanup merged branches`.
 
 ## Testes
 
