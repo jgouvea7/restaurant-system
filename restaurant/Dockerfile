@@ -23,6 +23,7 @@ ENV NODE_ENV=production \
     REDIS_HOST=floci \
     REDIS_PORT=16379 \
     SERVICE_NAME=restaurant \
+    JWT_ACCESS_TOKEN_SECRET=restaurant-dev-access-secret-change-me \
     USER_SERVICE_URL=http://floci:8080 \
     SNS_TOPIC_ARN=arn:aws:sns:us-east-1:000000000000:events \
     SQS_QUEUE_URL=http://floci:4566/000000000000/restaurant-events \

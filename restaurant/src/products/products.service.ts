@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -12,6 +13,35 @@ import { Restaurant } from '../restaurants/entities/restaurant.entity';
 @Injectable()
 export class ProductsService {
   constructor(private readonly dataSource: DataSource) {}
+
+  async ensureOwnedByRestaurant(restaurantId: string, ownerId: string) {
+    const restaurant = await this.dataSource
+      .getRepository(Restaurant)
+      .findOne({ where: { id: restaurantId } });
+
+    if (!restaurant) {
+      throw new NotFoundException('Restaurante nao encontrado');
+    }
+
+    if (restaurant.ownerUserId !== ownerId) {
+      throw new ForbiddenException('Restaurante de outro owner');
+    }
+  }
+
+  async ensureOwnedByProduct(productId: string, ownerId: string) {
+    const product = await this.dataSource.getRepository(Product).findOne({
+      where: { id: productId },
+      relations: { restaurant: true },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Produto nao encontrado');
+    }
+
+    if (product.restaurant?.ownerUserId !== ownerId) {
+      throw new ForbiddenException('Produto de outro owner');
+    }
+  }
 
   async create(dto: CreateProductDto) {
     const restaurant = await this.dataSource

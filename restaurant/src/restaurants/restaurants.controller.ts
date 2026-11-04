@@ -1,5 +1,6 @@
 import {
   Controller,
+  ForbiddenException,
   Get,
   Post,
   Body,
@@ -7,7 +8,16 @@ import {
   Param,
   Delete,
   Query,
+  UseGuards,
 } from '@nestjs/common';
+import {
+  AUTH_ROLES,
+  CurrentUser,
+  JwtAuthGuard,
+  Roles,
+  RolesGuard,
+} from '@restaurant/geolocation';
+import type { AuthenticatedUser } from '@restaurant/geolocation';
 import { RestaurantsService } from './restaurants.service';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
 import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
@@ -17,7 +27,18 @@ export class RestaurantsController {
   constructor(private readonly restaurantsService: RestaurantsService) {}
 
   @Post()
-  create(@Body() createRestaurantDto: CreateRestaurantDto) {
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.OWNER)
+  create(
+    @Body() createRestaurantDto: CreateRestaurantDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    if (!user.ownerId || createRestaurantDto.ownerUserId !== user.ownerId) {
+      throw new ForbiddenException(
+        'Restaurante deve ser criado pelo proprio owner',
+      );
+    }
+
     return this.restaurantsService.create(createRestaurantDto);
   }
 
@@ -52,12 +73,33 @@ export class RestaurantsController {
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updateRestaurantDto: UpdateRestaurantDto) {
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.OWNER)
+  async update(
+    @Param('id') id: string,
+    @Body() updateRestaurantDto: UpdateRestaurantDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    await this.assertOwner(id, user);
     return this.restaurantsService.update(id, updateRestaurantDto);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.OWNER)
+  async remove(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    await this.assertOwner(id, user);
     return this.restaurantsService.remove(id);
+  }
+
+  private assertOwner(id: string, user: AuthenticatedUser) {
+    if (!user.ownerId) {
+      throw new ForbiddenException('Owner sem vinculo');
+    }
+
+    return this.restaurantsService.ensureOwned(id, user.ownerId);
   }
 }

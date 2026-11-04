@@ -46,6 +46,12 @@ export class Order {
   @Column({ type: 'varchar', nullable: true })
   deliveryAddress!: string | null;
 
+  @Column({ type: 'uuid', nullable: true })
+  courierId!: string | null;
+
+  @Column({ type: 'timestamp', precision: 6, nullable: true })
+  courierAssignedAt!: Date | null;
+
   @OneToMany(() => OrderItem, (item) => item.order, {
     cascade: true,
     eager: true,
