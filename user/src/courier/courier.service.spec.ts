@@ -161,4 +161,27 @@ describe('CourierService', () => {
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
+
+  it('returns a courier profile without the password hash', async () => {
+    repository.findOne.mockResolvedValue({
+      ...courier,
+      user: {
+        id: 'user-1',
+        firstName: 'Courier',
+        lastName: 'One',
+        email: 'courier@example.com',
+        password: 'hash',
+        status: 'active',
+      },
+    });
+
+    const result = await service.findCourierById('courier-1');
+
+    expect(result.user).toEqual(
+      expect.objectContaining({ id: 'user-1', email: 'courier@example.com' }),
+    );
+    expect(
+      (result.user as unknown as { password?: string }).password,
+    ).toBeUndefined();
+  });
 });

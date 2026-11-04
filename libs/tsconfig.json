@@ -17,6 +17,7 @@
   },
   "include": [
     "*.ts",
+    "auth/**/*.ts",
     "geolocation/**/*.ts"
   ],
   "exclude": [

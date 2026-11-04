@@ -1,2 +1,7 @@
+export * from './auth/auth.types';
+export * from './auth/current-user.decorator';
+export * from './auth/jwt-auth.guard';
+export * from './auth/roles.decorator';
+export * from './auth/roles.guard';
 export * from './geolocation/geolocation.module';
 export * from './geolocation/geolocation.service';
