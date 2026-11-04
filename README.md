@@ -89,7 +89,7 @@ flowchart TB
     A1 --> AuthDB[(PostgreSQL<br/>auth-db)]
     A2 --> AuthDB
     A3 --> AuthDB
-    A1 -. credenciais .-> UserALB
+    A1 -.->|credenciais| UserALB
 
     U1 --> Redis[(Redis cache)]
     U2 --> Redis
@@ -107,11 +107,11 @@ flowchart TB
     R2 --> S3
     R3 --> S3
 
-    U1 --> SNS[[SNS events]]
+    U1 --> SNS["SNS events"]
     R1 --> SNS
     P1 --> SNS
-    SNS -. order.created .-> PaymentSQS[[SQS payment-events]]
-    SNS -. payment.approved/rejected .-> RestaurantSQS[[SQS restaurant-events]]
+    SNS -.->|order.created| PaymentSQS["SQS payment-events"]
+    SNS -.->|payment.approved/rejected| RestaurantSQS["SQS restaurant-events"]
 ```
 
 O diagrama também está disponível em `docs/mermaid-diagram.png`.
