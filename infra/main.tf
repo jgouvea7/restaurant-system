@@ -56,6 +56,13 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    from_port   = 8083
+    to_port     = 8083
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -154,6 +161,25 @@ resource "aws_db_instance" "payment" {
 
   tags = {
     Name = "payment-db"
+  }
+}
+
+resource "aws_db_instance" "auth" {
+  identifier        = "auth-db"
+  engine            = "postgres"
+  engine_version    = "16"
+  instance_class    = "db.t3.micro"
+  allocated_storage = 20
+  db_name           = "auth"
+  username          = "restaurant"
+  password          = "restaurant1234"
+  port              = 17004
+
+  db_subnet_group_name = aws_db_subnet_group.main.name
+  skip_final_snapshot  = true
+
+  tags = {
+    Name = "auth-db"
   }
 }
 
@@ -551,5 +577,93 @@ resource "aws_autoscaling_group" "payment" {
     aws_sns_topic.events,
     aws_sqs_queue.payment_events,
     aws_lb_listener.payment,
+  ]
+}
+
+resource "aws_launch_template" "auth" {
+  name                   = "auth"
+  image_id               = "ami-0c3d4e5f678901a2b"
+  instance_type          = "t3.micro"
+  vpc_security_group_ids = [aws_security_group.app.id]
+
+  tag_specifications {
+    resource_type = "instance"
+
+    tags = {
+      Name = "auth"
+    }
+  }
+}
+
+resource "aws_lb_target_group" "auth" {
+  name        = "auth"
+  port        = 3000
+  protocol    = "HTTP"
+  target_type = "instance"
+  vpc_id      = aws_vpc.main.id
+
+  health_check {
+    enabled             = true
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+
+  tags = {
+    Name = "auth"
+  }
+}
+
+resource "aws_lb" "auth" {
+  name               = "auth"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = [aws_subnet.main.id, aws_subnet.secondary.id]
+
+  tags = {
+    Name = "auth"
+  }
+}
+
+resource "aws_lb_listener" "auth" {
+  load_balancer_arn = aws_lb.auth.arn
+  port              = 8083
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.auth.arn
+  }
+}
+
+resource "aws_autoscaling_group" "auth" {
+  name                      = "auth"
+  min_size                  = 1
+  max_size                  = 5
+  desired_capacity          = 3
+  vpc_zone_identifier       = [aws_subnet.main.id, aws_subnet.secondary.id]
+  target_group_arns         = [aws_lb_target_group.auth.arn]
+  health_check_type         = "ELB"
+  wait_for_capacity_timeout = "0"
+
+  launch_template {
+    id      = aws_launch_template.auth.id
+    version = tostring(aws_launch_template.auth.latest_version)
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "auth"
+    propagate_at_launch = true
+  }
+
+  depends_on = [
+    aws_db_instance.auth,
+    aws_lb_listener.auth,
   ]
 }

@@ -10,6 +10,10 @@ output "payment_url" {
   value = "http://localhost:8082"
 }
 
+output "auth_url" {
+  value = "http://localhost:8083"
+}
+
 output "user_asg_name" {
   value = aws_autoscaling_group.user.name
 }
@@ -22,6 +26,10 @@ output "payment_asg_name" {
   value = aws_autoscaling_group.payment.name
 }
 
+output "auth_asg_name" {
+  value = aws_autoscaling_group.auth.name
+}
+
 output "user_db_endpoint" {
   value = aws_db_instance.user.endpoint
 }
@@ -32,6 +40,10 @@ output "restaurant_db_endpoint" {
 
 output "payment_db_endpoint" {
   value = aws_db_instance.payment.endpoint
+}
+
+output "auth_db_endpoint" {
+  value = aws_db_instance.auth.endpoint
 }
 
 output "redis_endpoint" {
