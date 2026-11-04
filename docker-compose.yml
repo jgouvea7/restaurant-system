@@ -9,6 +9,7 @@ services:
       - "8080:8080"
       - "8081:8081"
       - "8082:8082"
+      - "8083:8083"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - floci-data:/app/data
@@ -63,6 +64,16 @@ services:
     networks:
       - default
 
+  auth-image:
+    image: auth-app:latest
+    build:
+      context: .
+      dockerfile: auth/Dockerfile
+    entrypoint: ["/bin/true"]
+    restart: "no"
+    networks:
+      - default
+
   terraform:
     image: hashicorp/terraform:1.9
     working_dir: /workspace/infra
@@ -87,6 +98,8 @@ services:
       restaurant-image:
         condition: service_completed_successfully
       payment-image:
+        condition: service_completed_successfully
+      auth-image:
         condition: service_completed_successfully
     networks:
       - default

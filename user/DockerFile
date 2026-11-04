@@ -23,6 +23,7 @@ ENV NODE_ENV=production \
     REDIS_HOST=floci \
     REDIS_PORT=16379 \
     SERVICE_NAME=user \
+    JWT_ACCESS_TOKEN_SECRET=restaurant-dev-access-secret-change-me \
     SNS_TOPIC_ARN=arn:aws:sns:us-east-1:000000000000:events \
     AWS_ENDPOINT_URL=http://floci:4566 \
     AWS_DEFAULT_REGION=us-east-1 \

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -227,6 +228,22 @@ export class RestaurantsService {
 
   findAll() {
     return this.dataSource.getRepository(Restaurant).find();
+  }
+
+  async ensureOwned(restaurantId: string, ownerId: string) {
+    const restaurant = await this.dataSource
+      .getRepository(Restaurant)
+      .findOne({ where: { id: restaurantId } });
+
+    if (!restaurant) {
+      throw new NotFoundException('Restaurante nao encontrado');
+    }
+
+    if (restaurant.ownerUserId !== ownerId) {
+      throw new ForbiddenException('Restaurante de outro owner');
+    }
+
+    return restaurant;
   }
 
   findOwnerById(ownerId: string) {

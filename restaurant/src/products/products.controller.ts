@@ -2,12 +2,22 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Param,
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
+import {
+  AUTH_ROLES,
+  CurrentUser,
+  JwtAuthGuard,
+  Roles,
+  RolesGuard,
+} from '@restaurant/geolocation';
+import type { AuthenticatedUser } from '@restaurant/geolocation';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -17,7 +27,20 @@ export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
   @Post()
-  create(@Body() createProductDto: CreateProductDto) {
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.OWNER)
+  async create(
+    @Body() createProductDto: CreateProductDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    if (!user.ownerId) {
+      throw new ForbiddenException('Owner sem vinculo');
+    }
+
+    await this.productsService.ensureOwnedByRestaurant(
+      createProductDto.restaurantId,
+      user.ownerId,
+    );
     return this.productsService.create(createProductDto);
   }
 
@@ -32,12 +55,33 @@ export class ProductsController {
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updateProductDto: UpdateProductDto) {
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.OWNER)
+  async update(
+    @Param('id') id: string,
+    @Body() updateProductDto: UpdateProductDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    await this.assertOwner(id, user);
     return this.productsService.update(id, updateProductDto);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.OWNER)
+  async remove(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    await this.assertOwner(id, user);
     return this.productsService.remove(id);
+  }
+
+  private async assertOwner(id: string, user: AuthenticatedUser) {
+    if (!user.ownerId) {
+      throw new ForbiddenException('Owner sem vinculo');
+    }
+
+    await this.productsService.ensureOwnedByProduct(id, user.ownerId);
   }
 }

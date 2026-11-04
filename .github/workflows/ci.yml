@@ -25,6 +25,7 @@ jobs:
           - service: auth
             directory: auth
             test: true
+            shared: true
           - service: user
             directory: user
             test: true

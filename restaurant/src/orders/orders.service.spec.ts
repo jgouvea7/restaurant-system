@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { EventPublisherService } from '@restaurant/aws';
 import { OrdersService } from './orders.service';
@@ -13,7 +13,8 @@ describe('OrdersService', () => {
     save: jest.Mock;
   };
   let productRepository: { find: jest.Mock };
-  let restaurantRepository: { findOne: jest.Mock };
+  let restaurantRepository: { findOne: jest.Mock; find: jest.Mock };
+  let addressRepository: { findOne: jest.Mock };
   let eventPublisher: { publish: jest.Mock };
   let manager: { create: jest.Mock; save: jest.Mock };
 
@@ -26,6 +27,8 @@ describe('OrdersService', () => {
       status: OrderStatus.PENDING_PAYMENT,
       paymentMethod: 'pix',
       deliveryAddress: null,
+      courierId: null,
+      courierAssignedAt: null,
       items: [],
     };
 
@@ -49,7 +52,17 @@ describe('OrdersService', () => {
     };
 
     restaurantRepository = {
-      findOne: jest.fn().mockResolvedValue({ id: 'restaurant-1' }),
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 'restaurant-1', ownerUserId: 'owner-1' }),
+      find: jest.fn().mockResolvedValue([{ id: 'restaurant-1' }]),
+    };
+
+    addressRepository = {
+      findOne: jest.fn().mockResolvedValue({
+        latitude: -23.5,
+        longitude: -46.6,
+      }),
     };
 
     manager = {
@@ -76,6 +89,10 @@ describe('OrdersService', () => {
           return productRepository;
         }
 
+        if (entity.name === 'RestaurantAddress') {
+          return addressRepository;
+        }
+
         return restaurantRepository;
       }),
       transaction: jest.fn(async (callback) => callback(manager)),
@@ -87,6 +104,10 @@ describe('OrdersService', () => {
       dataSource,
       eventPublisher as unknown as EventPublisherService,
     );
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it('creates an order with item snapshots and publishes order.created', async () => {
@@ -188,5 +209,65 @@ describe('OrdersService', () => {
 
     expect(result?.status).toBe(OrderStatus.CONFIRMED);
     expect(eventPublisher.publish).not.toHaveBeenCalled();
+  });
+
+  it('assigns an explicit courier and starts delivery', async () => {
+    order.status = OrderStatus.READY;
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        courierId: 'courier-1',
+        available: 'available',
+      }),
+    } as unknown as Response);
+
+    const result = await service.assignCourier(
+      'order-1',
+      'owner-1',
+      'courier-1',
+    );
+
+    expect(result.status).toBe(OrderStatus.OUT_FOR_DELIVERY);
+    expect(result.courierId).toBe('courier-1');
+    expect(eventPublisher.publish).toHaveBeenCalledWith(
+      'order.courier.assigned',
+      expect.objectContaining({
+        orderId: 'order-1',
+        restaurantId: 'restaurant-1',
+        courierId: 'courier-1',
+        status: OrderStatus.OUT_FOR_DELIVERY,
+      }),
+      'restaurant',
+    );
+  });
+
+  it('selects the nearest available courier when none is given', async () => {
+    order.status = OrderStatus.READY;
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: jest
+        .fn()
+        .mockResolvedValue([
+          { courierId: 'courier-1', vehicleType: 'moto', distanceKm: 1.2 },
+        ]),
+    } as unknown as Response);
+
+    const result = await service.assignCourier('order-1', 'owner-1');
+
+    expect(result.courierId).toBe('courier-1');
+  });
+
+  it('rejects courier assignment from another owner', async () => {
+    order.status = OrderStatus.READY;
+    restaurantRepository.findOne.mockResolvedValue({
+      id: 'restaurant-1',
+      ownerUserId: 'owner-2',
+    });
+
+    await expect(
+      service.assignCourier('order-1', 'owner-1', 'courier-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

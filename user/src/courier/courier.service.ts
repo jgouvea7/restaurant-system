@@ -51,7 +51,7 @@ export class CourierService {
       const user = manager.create(User, {
         firstName: dto.firstName,
         lastName: dto.lastName,
-        email: dto.email,
+        email: dto.email.trim().toLowerCase(),
         password: hashedPassowrd,
         status: userStatus.ACTIVE,
       });
@@ -66,7 +66,20 @@ export class CourierService {
 
       await manager.save(courierUser);
 
-      return { user, courierUser };
+      return {
+        user: {
+          id: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          status: user.status,
+        },
+        courierUser: {
+          courierId: courierUser.courierId,
+          vehicleType: courierUser.vehicleType,
+          available: courierUser.available,
+        },
+      };
     });
   }
 
@@ -226,12 +239,46 @@ export class CourierService {
     });
   }
 
-  getAllCourierUsers() {
-    return this.dataSource.getRepository(Courier).find({
+  async findCourierById(courierId: string) {
+    const courier = await this.dataSource.getRepository(Courier).findOne({
+      where: { courierId },
       relations: {
         user: true,
       },
     });
+
+    if (!courier) {
+      throw new NotFoundException('Entregador nao encontrado');
+    }
+
+    return this.toPublicCourier(courier);
+  }
+
+  async getAllCourierUsers() {
+    const couriers = await this.dataSource.getRepository(Courier).find({
+      relations: {
+        user: true,
+      },
+    });
+
+    return couriers.map((courier) => this.toPublicCourier(courier));
+  }
+
+  private toPublicCourier(courier: Courier) {
+    return {
+      courierId: courier.courierId,
+      vehicleType: courier.vehicleType,
+      available: courier.available,
+      user: courier.user
+        ? {
+            id: courier.user.id,
+            firstName: courier.user.firstName,
+            lastName: courier.user.lastName,
+            email: courier.user.email,
+            status: courier.user.status,
+          }
+        : null,
+    };
   }
 
   private async findCourier(courierId: string): Promise<Courier> {

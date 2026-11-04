@@ -1,19 +1,35 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { DataSource, FindOptionsWhere, In } from 'typeorm';
 import {
   EVENT_TYPES,
   EventPublisherService,
 } from '@restaurant/aws';
+import { AUTH_ROLES } from '@restaurant/geolocation';
+import type { AuthenticatedUser } from '@restaurant/geolocation';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderItem } from './entities/order-item.entity';
 import { Order, OrderStatus } from './entities/order.entity';
 import { Product } from '../products/entities/product.entity';
 import { Restaurant } from '../restaurants/entities/restaurant.entity';
+import { RestaurantAddress } from '../restaurant-address/entities/restaurant-address.entity';
+
+interface NearbyCourier {
+  courierId: string;
+  distanceKm: number;
+}
+
+interface CourierDetails {
+  courierId: string;
+  available: string;
+}
 
 const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.PENDING_PAYMENT]: [
@@ -138,7 +154,64 @@ export class OrdersService {
     return order;
   }
 
-  findAll(restaurantId?: string, costumerUserId?: string) {
+  async findAllForUser(
+    restaurantId: string | undefined,
+    costumerUserId: string | undefined,
+    user: AuthenticatedUser,
+  ) {
+    if (user.roles.includes(AUTH_ROLES.OWNER)) {
+      if (!user.ownerId) {
+        throw new ForbiddenException('Owner sem vinculo');
+      }
+
+      if (restaurantId) {
+        await this.assertOwnedRestaurant(restaurantId, user.ownerId);
+        return this.findAll(restaurantId, costumerUserId);
+      }
+
+      const restaurants = await this.dataSource.getRepository(Restaurant).find({
+        where: { ownerUserId: user.ownerId },
+        select: { id: true },
+      });
+      const restaurantIds = restaurants.map((restaurant) => restaurant.id);
+
+      if (restaurantIds.length === 0) {
+        return [];
+      }
+
+      return this.dataSource.getRepository(Order).find({
+        where: {
+          restaurantId: In(restaurantIds),
+          ...(costumerUserId ? { costumerUserId } : {}),
+        },
+        order: { createdAt: 'DESC' },
+      });
+    }
+
+    if (user.roles.includes(AUTH_ROLES.COSTUMER)) {
+      if (costumerUserId && costumerUserId !== user.userId) {
+        throw new ForbiddenException('Pedido de outro cliente');
+      }
+
+      return this.findAll(restaurantId, user.userId);
+    }
+
+    if (user.roles.includes(AUTH_ROLES.COURIER)) {
+      if (!user.courierId) {
+        throw new ForbiddenException('Entregador sem vinculo');
+      }
+
+      return this.findAll(restaurantId, costumerUserId, user.courierId);
+    }
+
+    throw new ForbiddenException('Permissao insuficiente');
+  }
+
+  findAll(
+    restaurantId?: string,
+    costumerUserId?: string,
+    courierId?: string,
+  ) {
     const where: FindOptionsWhere<Order> = {};
 
     if (restaurantId) {
@@ -147,6 +220,10 @@ export class OrdersService {
 
     if (costumerUserId) {
       where.costumerUserId = costumerUserId;
+    }
+
+    if (courierId) {
+      where.courierId = courierId;
     }
 
     return this.dataSource.getRepository(Order).find({
@@ -165,6 +242,112 @@ export class OrdersService {
     }
 
     return order;
+  }
+
+  async findOneForUser(id: string, user: AuthenticatedUser) {
+    const order = await this.findOne(id);
+    await this.assertCanAccessOrder(order, user);
+    return order;
+  }
+
+  async updateStatusForUser(
+    id: string,
+    status: OrderStatus,
+    user: AuthenticatedUser,
+  ) {
+    const order = await this.findOne(id);
+
+    if (user.roles.includes(AUTH_ROLES.OWNER)) {
+      if (!user.ownerId) {
+        throw new ForbiddenException('Owner sem vinculo');
+      }
+
+      await this.assertOwnedRestaurant(order.restaurantId, user.ownerId);
+
+      if (status === OrderStatus.OUT_FOR_DELIVERY && !order.courierId) {
+        throw new BadRequestException(
+          'Use a atribuicao de entregador para iniciar a entrega',
+        );
+      }
+
+      return this.updateStatus(id, status);
+    }
+
+    if (user.roles.includes(AUTH_ROLES.COURIER)) {
+      if (!user.courierId || order.courierId !== user.courierId) {
+        throw new ForbiddenException('Pedido nao atribuido ao entregador');
+      }
+
+      if (status !== OrderStatus.DELIVERED) {
+        throw new ForbiddenException(
+          'Entregador so pode marcar o pedido como entregue',
+        );
+      }
+
+      return this.updateStatus(id, status);
+    }
+
+    if (user.roles.includes(AUTH_ROLES.COSTUMER)) {
+      if (order.costumerUserId !== user.userId) {
+        throw new ForbiddenException('Pedido de outro cliente');
+      }
+
+      if (status !== OrderStatus.CANCELLED) {
+        throw new ForbiddenException(
+          'Cliente so pode cancelar o proprio pedido',
+        );
+      }
+
+      return this.updateStatus(id, status);
+    }
+
+    throw new ForbiddenException('Permissao insuficiente');
+  }
+
+  async assignCourier(
+    id: string,
+    ownerId: string,
+    courierId?: string,
+  ) {
+    const order = await this.findOne(id);
+    await this.assertOwnedRestaurant(order.restaurantId, ownerId);
+
+    if (order.status === OrderStatus.OUT_FOR_DELIVERY && order.courierId) {
+      return order;
+    }
+
+    if (order.status !== OrderStatus.READY) {
+      throw new BadRequestException(
+        'Pedido precisa estar pronto para receber um entregador',
+      );
+    }
+
+    const selectedCourierId = courierId?.trim()
+      ? await this.validateCourier(courierId.trim())
+      : await this.findNearestCourier(order.restaurantId);
+
+    order.courierId = selectedCourierId;
+    order.courierAssignedAt = new Date();
+    await this.dataSource.getRepository(Order).save(order);
+
+    const updated = await this.updateStatus(
+      order.id,
+      OrderStatus.OUT_FOR_DELIVERY,
+    );
+
+    await this.eventPublisher.publish(
+      EVENT_TYPES.ORDER_COURIER_ASSIGNED,
+      {
+        orderId: updated.id,
+        restaurantId: updated.restaurantId,
+        courierId: selectedCourierId,
+        status: updated.status,
+        assignedAt: order.courierAssignedAt.toISOString(),
+      },
+      'restaurant',
+    );
+
+    return updated;
   }
 
   async updateStatus(id: string, status: OrderStatus) {
@@ -221,6 +404,147 @@ export class OrdersService {
     return this.updateStatus(
       order.id,
       approved ? OrderStatus.CONFIRMED : OrderStatus.PAYMENT_REJECTED,
+    );
+  }
+
+  private async assertCanAccessOrder(
+    order: Order,
+    user: AuthenticatedUser,
+  ): Promise<void> {
+    if (user.roles.includes(AUTH_ROLES.OWNER) && user.ownerId) {
+      const restaurant = await this.dataSource
+        .getRepository(Restaurant)
+        .findOne({ where: { id: order.restaurantId } });
+
+      if (restaurant?.ownerUserId === user.ownerId) {
+        return;
+      }
+    }
+
+    if (
+      user.roles.includes(AUTH_ROLES.COSTUMER) &&
+      order.costumerUserId === user.userId
+    ) {
+      return;
+    }
+
+    if (
+      user.roles.includes(AUTH_ROLES.COURIER) &&
+      order.courierId === user.courierId
+    ) {
+      return;
+    }
+
+    throw new ForbiddenException('Pedido de outro usuario');
+  }
+
+  private async assertOwnedRestaurant(
+    restaurantId: string,
+    ownerId: string,
+  ): Promise<Restaurant> {
+    const restaurant = await this.dataSource
+      .getRepository(Restaurant)
+      .findOne({ where: { id: restaurantId } });
+
+    if (!restaurant) {
+      throw new NotFoundException('Restaurante nao encontrado');
+    }
+
+    if (restaurant.ownerUserId !== ownerId) {
+      throw new ForbiddenException('Restaurante de outro owner');
+    }
+
+    return restaurant;
+  }
+
+  private async findNearestCourier(restaurantId: string): Promise<string> {
+    const address = await this.dataSource
+      .getRepository(RestaurantAddress)
+      .findOne({ where: { restaurant: { id: restaurantId } } });
+
+    if (!address) {
+      throw new BadRequestException(
+        'Restaurante sem endereco para buscar entregadores',
+      );
+    }
+
+    const url = new URL('/courier/nearby', this.userServiceBaseUrl());
+    url.searchParams.set('latitude', String(address.latitude));
+    url.searchParams.set('longitude', String(address.longitude));
+    url.searchParams.set(
+      'radiusKm',
+      process.env.COURIER_SEARCH_RADIUS_KM ?? '10',
+    );
+    url.searchParams.set('limit', '5');
+
+    let response: Response;
+
+    try {
+      response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    } catch {
+      throw new ServiceUnavailableException(
+        'Nao foi possivel buscar entregadores',
+      );
+    }
+
+    if (!response.ok) {
+      throw new InternalServerErrorException(
+        `Erro ao buscar entregadores: ${response.status}`,
+      );
+    }
+
+    const couriers = (await response.json()) as NearbyCourier[];
+
+    if (!Array.isArray(couriers) || couriers.length === 0) {
+      throw new NotFoundException('Nenhum entregador disponivel');
+    }
+
+    return couriers[0].courierId;
+  }
+
+  private async validateCourier(courierId: string): Promise<string> {
+    let response: Response;
+
+    try {
+      response = await fetch(
+        `${this.userServiceBaseUrl()}/courier/${encodeURIComponent(courierId)}`,
+        { signal: AbortSignal.timeout(5000) },
+      );
+    } catch {
+      throw new ServiceUnavailableException(
+        'Nao foi possivel consultar o entregador',
+      );
+    }
+
+    if (response.status === 404) {
+      throw new NotFoundException('Entregador nao encontrado');
+    }
+
+    if (!response.ok) {
+      throw new InternalServerErrorException(
+        `Erro ao consultar entregador: ${response.status}`,
+      );
+    }
+
+    const courier = (await response.json()) as CourierDetails;
+
+    if (!courier.courierId) {
+      throw new InternalServerErrorException(
+        'Resposta invalida do servico de entregadores',
+      );
+    }
+
+    if (courier.available !== 'available') {
+      throw new BadRequestException('Entregador indisponivel');
+    }
+
+    return courier.courierId;
+  }
+
+  private userServiceBaseUrl(): string {
+    return (process.env.USER_SERVICE_URL ?? 'http://floci:8080').replace(
+      /\/$/,
+      '',
     );
   }
 

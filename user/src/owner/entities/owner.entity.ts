@@ -15,7 +15,7 @@ export class Owner {
     @UpdateDateColumn({ type: "timestamp", precision: 6 })
     updatedAt!: Date;
 
-    @OneToOne(() => User, (user) => user.costumer)
+    @OneToOne(() => User, (user) => user.owner)
     @JoinColumn({ name: "user_id"})
     user!: User;
 }

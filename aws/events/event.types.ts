@@ -5,6 +5,7 @@ export const EVENT_TYPES = {
   COURIER_AVAILABILITY_CHANGED: 'courier.availability.changed',
   ORDER_CREATED: 'order.created',
   ORDER_STATUS_CHANGED: 'order.status.changed',
+  ORDER_COURIER_ASSIGNED: 'order.courier.assigned',
   PAYMENT_APPROVED: 'payment.approved',
   PAYMENT_REJECTED: 'payment.rejected',
 } as const;
@@ -62,6 +63,14 @@ export interface OrderStatusChangedEvent {
   previousStatus: string;
 }
 
+export interface OrderCourierAssignedEvent {
+  orderId: string;
+  restaurantId: string;
+  courierId: string;
+  status: string;
+  assignedAt: string;
+}
+
 export interface PaymentApprovedEvent {
   paymentId: string;
   orderId: string;
@@ -82,6 +91,7 @@ export interface EventPayloads {
   [EVENT_TYPES.COURIER_AVAILABILITY_CHANGED]: CourierAvailabilityChangedEvent;
   [EVENT_TYPES.ORDER_CREATED]: OrderCreatedEvent;
   [EVENT_TYPES.ORDER_STATUS_CHANGED]: OrderStatusChangedEvent;
+  [EVENT_TYPES.ORDER_COURIER_ASSIGNED]: OrderCourierAssignedEvent;
   [EVENT_TYPES.PAYMENT_APPROVED]: PaymentApprovedEvent;
   [EVENT_TYPES.PAYMENT_REJECTED]: PaymentRejectedEvent;
 }

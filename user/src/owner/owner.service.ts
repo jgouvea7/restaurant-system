@@ -19,7 +19,7 @@ export class OwnerService {
       const user = manager.create(User, {
         firstName: dto.firstName,
         lastName: dto.lastName,
-        email: dto.email,
+        email: dto.email.trim().toLowerCase(),
         password: hashedPassword,
         status: userStatus.ACTIVE
       })
@@ -33,7 +33,12 @@ export class OwnerService {
 
       await manager.save(ownerUser);
 
-      return { ownerUser }
+      return {
+        ownerUser: {
+          id: ownerUser.id,
+          document: ownerUser.document,
+        },
+      }
     })
   }
 

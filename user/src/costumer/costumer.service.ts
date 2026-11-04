@@ -25,7 +25,7 @@ export class CostumerService {
       const user = manager.create(User, {
         firstName: dto.firstName,
         lastName: dto.lastName,
-        email: dto.email,
+        email: dto.email.trim().toLowerCase(),
         password: hashedPassowrd,
         status: userStatus.ACTIVE
       });
@@ -64,17 +64,44 @@ export class CostumerService {
 
       await manager.save(addressUser)
 
-      return { user, costumerUser }
+      return {
+        user: {
+          id: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          status: user.status,
+        },
+        costumerUser: {
+          costumerId: costumerUser.costumerId,
+          phone: costumerUser.phone,
+        },
+      }
     })
     
   }
 
-  getAllCostumerUsers() {
-    return this.dataSource.getRepository(Costumer).find({
+  async getAllCostumerUsers() {
+    const costumers = await this.dataSource.getRepository(Costumer).find({
       relations: {
         user: true,
         address: true,
-      }
-    })
+      },
+    });
+
+    return costumers.map((costumer) => ({
+      costumerId: costumer.costumerId,
+      phone: costumer.phone,
+      address: costumer.address,
+      user: costumer.user
+        ? {
+            id: costumer.user.id,
+            firstName: costumer.user.firstName,
+            lastName: costumer.user.lastName,
+            email: costumer.user.email,
+            status: costumer.user.status,
+          }
+        : null,
+    }));
   }
 }

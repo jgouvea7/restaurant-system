@@ -8,12 +8,12 @@
 
 ## Estrutura
 
-- `auth`: autenticação
+- `auth`: autenticação, JWT e sessões de refresh
 - `user`: usuários, clientes, entregadores e proprietários
 - `restaurant`: restaurantes, endereços, horários, produtos e pedidos
 - `payment`: pagamentos simulados e publicação de eventos
 - `aws`: integrações compartilhadas com AWS/Floci
-- `libs`: serviços compartilhados, incluindo geolocalização
+- `libs`: serviços compartilhados, incluindo geolocalização e guardas JWT
 - `infra`: infraestrutura Terraform
 - `docker-compose.yml`: ambiente local com Floci
 
@@ -28,7 +28,7 @@ npm run build
 npm test -- --runInBand
 ```
 
-Os serviços `user` e `restaurant` compilam `libs` e `aws` como parte do build. Para alterações nesses pacotes compartilhados, valide também:
+Os serviços `user`, `restaurant`, `payment` e `auth` compilam `libs` e/ou `aws` como parte do build. Para alterações nesses pacotes compartilhados, valide também:
 
 ```bash
 cd aws
