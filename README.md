@@ -35,11 +35,11 @@ O domínio é dividido em quatro microsserviços:
 | Serviço | Responsabilidade | Status |
 | --- | --- | --- |
 | `user` | Usuários, clientes, entregadores e endereços | Implementado |
-| `auth` | Autenticação e autorização | Estrutura inicial |
+| `auth` | Autenticação, JWT e sessões de refresh | Implementado |
 | `restaurant` | Restaurantes, cardápios e pedidos | Implementado |
 | `payment` | Pagamentos simulados e publicação do resultado | Implementado |
 
-Cada microsserviço tem seu próprio banco (`database per service`), sua própria imagem/AMI, seu próprio ALB e um Auto Scaling Group com 3 réplicas. Os serviços `user`, `restaurant` e `payment` já rodam nesse modelo; `auth` segue o mesmo padrão quando for implementado.
+Cada microsserviço tem seu próprio banco (`database per service`), sua própria imagem/AMI, seu próprio ALB e um Auto Scaling Group com 3 réplicas. Os serviços `user`, `restaurant`, `payment` e `auth` rodam nesse modelo.
 
 ```mermaid
 flowchart TB
@@ -48,6 +48,13 @@ flowchart TB
     Client --> UserALB[ALB user :8080]
     Client --> RestaurantALB[ALB restaurant :8081]
     Client --> PaymentALB[ALB payment :8082]
+    Client --> AuthALB[ALB auth :8083]
+
+    subgraph AuthService[auth]
+        AuthALB --> A1[auth #1]
+        AuthALB --> A2[auth #2]
+        AuthALB --> A3[auth #3]
+    end
 
     subgraph UserService[user]
         UserALB --> U1[user #1]
@@ -78,6 +85,11 @@ flowchart TB
     P1 --> PaymentDB[(PostgreSQL<br/>payment-db)]
     P2 --> PaymentDB
     P3 --> PaymentDB
+
+    A1 --> AuthDB[(PostgreSQL<br/>auth-db)]
+    A2 --> AuthDB
+    A3 --> AuthDB
+    A1 -. credenciais .-> UserALB
 
     U1 --> Redis[(Redis cache)]
     U2 --> Redis
@@ -110,9 +122,9 @@ O diagrama também está disponível em `docs/mermaid-diagram.png`.
 | --- | --- |
 | VPC | `10.20.0.0/16` |
 | Subnets | `10.20.1.0/24` (us-east-1a) e `10.20.2.0/24` (us-east-1b) |
-| ALB | `user` em `localhost:8080`, `restaurant` em `localhost:8081` e `payment` em `localhost:8082` |
-| Auto Scaling | `user`, `restaurant` e `payment` com `min=1`, `desired=3`, `max=5` |
-| RDS | PostgreSQL `user-db` na porta `17001`, `restaurant-db` na porta `17002` e `payment-db` na porta `17003` |
+| ALB | `user` em `localhost:8080`, `restaurant` em `localhost:8081`, `payment` em `localhost:8082` e `auth` em `localhost:8083` |
+| Auto Scaling | `user`, `restaurant`, `payment` e `auth` com `min=1`, `desired=3`, `max=5` |
+| RDS | PostgreSQL `user-db` na porta `17001`, `restaurant-db` na porta `17002`, `payment-db` na porta `17003` e `auth-db` na porta `17004` |
 | ElastiCache | Redis `cache` na porta `16379` |
 | S3 | Bucket `uploads` |
 | SNS | Tópico `events` |
@@ -126,6 +138,7 @@ O diagrama também está disponível em `docs/mermaid-diagram.png`.
 | `8080` | ALB do microsserviço `user` |
 | `8081` | ALB do microsserviço `restaurant` |
 | `8082` | ALB do microsserviço `payment` |
+| `8083` | ALB do microsserviço `auth` |
 | `17001-17099` | Proxies de PostgreSQL (RDS) |
 | `16379-16399` | Proxies de Redis (ElastiCache) |
 | `2200-2299` | SSH das instâncias EC2 emuladas |
@@ -137,7 +150,7 @@ As aplicações escutam em `3000` dentro das instâncias. O acesso externo passa
 
 ```text
 .
-├── auth/                  # Microsserviço de autenticação (estrutura inicial)
+├── auth/                  # Microsserviço de autenticação e sessões JWT
 ├── aws/                   # Pacote compartilhado de integração com AWS
 ├── docs/                  # Diagramas
 ├── infra/                 # Terraform
@@ -153,7 +166,7 @@ As aplicações escutam em `3000` dentro das instâncias. O acesso externo passa
 └── README.md
 ```
 
-O pacote `aws/` centraliza a integração com S3, SNS, SQS, EC2 e ElastiCache (Redis) para ser reutilizado pelos serviços.
+O pacote `aws/` centraliza a integração com S3, SNS, SQS, EC2 e ElastiCache (Redis). O pacote `libs/` concentra geolocalização e as guardas/decorators compartilhados de JWT.
 
 ### Redis GEO
 
@@ -172,11 +185,13 @@ A localização dos entregadores fica em `couriers:geo` e a disponibilidade em `
 ```bash
 # Atualizar a localização
 curl -X PATCH http://localhost:8080/courier/COURIER_ID/location \
+  -H "Authorization: Bearer COURIER_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"latitude":-23.5614,"longitude":-46.6559}'
 
 # Definir disponibilidade
 curl -X PATCH http://localhost:8080/courier/COURIER_ID/availability \
+  -H "Authorization: Bearer COURIER_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"available":true}'
 
@@ -186,23 +201,94 @@ curl "http://localhost:8080/courier/nearby?latitude=-23.5614&longitude=-46.6559&
 
 O endpoint antigo `POST /courier/:id/available` continua disponível e alterna o estado atual.
 
+### Autenticação e autorização
+
+O `auth` valida email/senha no `user` (`POST /users/authenticate`), emite um access token JWT de curta duração e persiste apenas o hash do refresh token no seu próprio banco (`auth-db`). O refresh é rotacionado a cada uso.
+
+```bash
+# Login
+curl -X POST http://localhost:8083/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"owner@example.com","password":"secret"}'
+
+# Renovar o par de tokens
+curl -X POST http://localhost:8083/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken":"REFRESH_TOKEN"}'
+
+# Consultar o usuario do access token
+curl http://localhost:8083/auth/me \
+  -H "Authorization: Bearer ACCESS_TOKEN"
+
+# Logout/revogacao do refresh token
+curl -X POST http://localhost:8083/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken":"REFRESH_TOKEN"}'
+```
+
+O access token contém `sub` (id do usuário), email, papéis (`owner`, `courier`, `costumer`) e os ids de perfil (`ownerId`, `courierId`, `costumerId`). O segredo é compartilhado pelos serviços por `JWT_ACCESS_TOKEN_SECRET`; o valor padrão é apenas didático.
+
+Endpoints protegidos nesta fase:
+
+| Serviço | Endpoint | Regra |
+| --- | --- | --- |
+| `restaurant` | `POST /restaurants` | `owner`; `ownerUserId` deve ser o próprio owner |
+| `restaurant` | `POST/PATCH/DELETE /products` | `owner`; produto/restaurante do próprio owner |
+| `restaurant` | `POST /orders` | `costumer`; `costumerUserId` deve ser o próprio usuário |
+| `restaurant` | `GET /orders` e `GET /orders/:id` | owner do restaurante, cliente do pedido ou entregador atribuído |
+| `restaurant` | `PATCH /orders/:id/status` | owner do restaurante, cliente (apenas cancelar) ou entregador (apenas `delivered`) |
+| `restaurant` | `PATCH /orders/:id/courier` | `owner` do restaurante; atribui entregador e inicia a entrega |
+| `payment` | `GET /payments/:orderId` | qualquer usuário autenticado |
+| `user` | `PATCH /courier/:id/location`, `/availability` e `POST /courier/:id/available` | `courier` dono do id |
+
+As rotas de cadastro (`POST /costumer`, `/owner`, `/courier`), o cardápio público e a busca de restaurantes/entregadores próximos continuam abertos.
+
+### Entregadores e pedidos
+
+Quando o pedido está em `ready`, o owner pode atribuir um entregador. Sem `courierId` no corpo, o `restaurant` busca o entregador disponível mais próximo do endereço do restaurante; com `courierId`, valida se ele existe e está disponível. A atribuição move o pedido para `out_for_delivery` e publica `order.courier.assigned`.
+
+```bash
+curl -X PATCH http://localhost:8081/orders/ORDER_ID/courier \
+  -H "Authorization: Bearer OWNER_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# Ou escolhendo explicitamente
+curl -X PATCH http://localhost:8081/orders/ORDER_ID/courier \
+  -H "Authorization: Bearer OWNER_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"courierId":"COURIER_ID"}'
+```
+
+Depois disso, o entregador pode avançar o pedido para `delivered`:
+
+```bash
+curl -X PATCH http://localhost:8081/orders/ORDER_ID/status \
+  -H "Authorization: Bearer COURIER_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"delivered"}'
+```
+
 ### Pedidos e pagamentos
 
 O `restaurant` expõe CRUD de produtos e pedidos. Ao criar um pedido, os itens guardam um snapshot de nome e preço do produto, e o pedido nasce como `pending_payment`:
 
 ```bash
 curl -X POST http://localhost:8081/orders \
+  -H "Authorization: Bearer COSTUMER_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "restaurantId": "RESTAURANT_ID",
-    "costumerUserId": "CUSTOMER_ID",
+    "costumerUserId": "COSTUMER_USER_ID",
     "paymentMethod": "pix",
     "deliveryAddress": "Rua Exemplo, 123",
     "items": [{ "productId": "PRODUCT_ID", "quantity": 2 }]
   }'
 
-curl "http://localhost:8081/orders?restaurantId=RESTAURANT_ID"
+curl "http://localhost:8081/orders?restaurantId=RESTAURANT_ID" \
+  -H "Authorization: Bearer OWNER_ACCESS_TOKEN"
 curl -X PATCH http://localhost:8081/orders/ORDER_ID/status \
+  -H "Authorization: Bearer OWNER_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"status":"preparing"}'
 ```
@@ -210,10 +296,11 @@ curl -X PATCH http://localhost:8081/orders/ORDER_ID/status \
 O `payment` consome `order.created` e aprova automaticamente pedidos até `PAYMENT_APPROVAL_LIMIT` (padrão `1000`). O resultado é publicado como `payment.approved` ou `payment.rejected`; o `restaurant` consome esses eventos e atualiza o pedido para `confirmed` ou `payment_rejected`. O pagamento pode ser consultado por:
 
 ```bash
-curl http://localhost:8082/payments/ORDER_ID
+curl http://localhost:8082/payments/ORDER_ID \
+  -H "Authorization: Bearer ACCESS_TOKEN"
 ```
 
-Transições manuais permitidas: `pending_payment` → `cancelled`; `confirmed` → `preparing` → `ready` → `out_for_delivery` → `delivered`; `confirmed`, `preparing`, `ready` e `out_for_delivery` também podem ir para `cancelled`. `delivered`, `cancelled` e `payment_rejected` são estados finais.
+Transições manuais permitidas: `pending_payment` → `cancelled`; `confirmed` → `preparing` → `ready` → `out_for_delivery` → `delivered`; `confirmed`, `preparing`, `ready` e `out_for_delivery` também podem ir para `cancelled`. `delivered`, `cancelled` e `payment_rejected` são estados finais. Para iniciar a entrega, prefira `PATCH /orders/:id/courier`; o owner não pode mover para `out_for_delivery` sem entregador atribuído.
 
 O processamento é pelo menos uma vez, então `PaymentsService` ignora pedidos que já possuem pagamento e `OrdersService` ignora eventos de pagamento para pedidos que não estão mais em `pending_payment`.
 
@@ -238,6 +325,7 @@ Eventos publicados nesta fase:
 | `courier.availability.changed` | `user` |
 | `order.created` | `restaurant` |
 | `order.status.changed` | `restaurant` |
+| `order.courier.assigned` | `restaurant` |
 | `payment.approved` | `payment` |
 | `payment.rejected` | `payment` |
 
@@ -260,7 +348,7 @@ docker compose up -d --build
 Esse comando:
 
 1. Sobe o Floci.
-2. Constrói as imagens `user-app:latest`, `restaurant-app:latest` e `payment-app:latest`.
+2. Constrói as imagens `user-app:latest`, `restaurant-app:latest`, `payment-app:latest` e `auth-app:latest`.
 3. Executa `terraform init` e `terraform apply` dentro do container.
 
 Acompanhe a infraestrutura:
@@ -275,6 +363,7 @@ Quando o apply terminar:
 curl http://localhost:8080
 curl http://localhost:8081
 curl http://localhost:8082
+curl http://localhost:8083
 # Hello World!
 ```
 
@@ -289,7 +378,7 @@ export AWS_DEFAULT_REGION=us-east-1
 # No PowerShell: $env:AWS_ACCESS_KEY_ID="test"; $env:AWS_SECRET_ACCESS_KEY="test"; $env:AWS_DEFAULT_REGION="us-east-1"
 
 aws --endpoint-url http://localhost:4566 autoscaling describe-auto-scaling-groups \
-  --auto-scaling-group-names user restaurant payment
+  --auto-scaling-group-names user restaurant payment auth
 
 TG_ARN=$(aws --endpoint-url http://localhost:4566 elbv2 describe-target-groups \
   --names user \
@@ -299,7 +388,7 @@ TG_ARN=$(aws --endpoint-url http://localhost:4566 elbv2 describe-target-groups \
 aws --endpoint-url http://localhost:4566 elbv2 describe-target-health \
   --target-group-arn "$TG_ARN"
 
-# Repita trocando "user" por "restaurant" ou "payment" para checar os outros serviços.
+# Repita trocando "user" por "restaurant", "payment" ou "auth" para checar os outros serviços.
 ```
 
 ### Reaplicar mudanças de infraestrutura
@@ -329,6 +418,11 @@ cd ../payment
 npm install
 npm test
 npm run start:dev
+
+cd ../auth
+npm install
+npm test
+npm run start:dev
 ```
 
 ### Testes e validações
@@ -337,7 +431,9 @@ npm run start:dev
 cd user && npm test
 cd ../restaurant && npm test
 cd ../payment && npm test
+cd ../auth && npm test
 cd ../aws && npm run build
+cd ../libs && npm run build
 docker compose run --rm terraform sh -c "terraform fmt -check -recursive && terraform validate"
 docker compose config --quiet
 ```
@@ -408,6 +504,7 @@ O Floci é um emulador, não a AWS real. Alguns pontos importantes:
 
 ## Próximos passos
 
-- Implementar `auth` com seu próprio banco e ALB.
 - Adicionar outbox e idempotência persistente para eventos críticos.
 - Adicionar health checks específicos (`/health`) e observabilidade.
+- Modelar reserva de entregador, aceite/recusa e liberação automática de disponibilidade.
+- Adicionar migrações versionadas no lugar de `synchronize`.
