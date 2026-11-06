@@ -3,6 +3,7 @@ import { DataSource, EntityManager } from 'typeorm';
 import {
   DomainEvent,
   EventIdempotencyStore,
+  EventMaintenanceStore,
   EventOutboxStore,
   IdempotencyClaim,
   StoredEvent,
@@ -22,7 +23,7 @@ const PROCESSING_TIMEOUT_MS = 120_000;
 
 @Injectable()
 export class TypeOrmEventStore
-  implements EventOutboxStore, EventIdempotencyStore
+  implements EventOutboxStore, EventIdempotencyStore, EventMaintenanceStore
 {
   private readonly logger = new Logger(TypeOrmEventStore.name);
 
@@ -195,6 +196,36 @@ export class TypeOrmEventStore
     await this.dataSource
       .getRepository(ProcessedEvent)
       .delete({ consumer, eventId, status: ProcessedEventStatus.PROCESSING });
+  }
+
+  async purgePublishedBefore(publishedBefore: Date): Promise<number> {
+    const result = await this.dataSource
+      .getRepository(OutboxEvent)
+      .createQueryBuilder()
+      .delete()
+      .from(OutboxEvent)
+      .where('status = :status AND publishedAt IS NOT NULL AND publishedAt <= :publishedBefore', {
+        status: OutboxEventStatus.PUBLISHED,
+        publishedBefore,
+      })
+      .execute();
+
+    return result.affected ?? 0;
+  }
+
+  async purgeProcessedBefore(processedBefore: Date): Promise<number> {
+    const result = await this.dataSource
+      .getRepository(ProcessedEvent)
+      .createQueryBuilder()
+      .delete()
+      .from(ProcessedEvent)
+      .where('status = :status AND processedAt IS NOT NULL AND processedAt <= :processedBefore', {
+        status: ProcessedEventStatus.PROCESSED,
+        processedBefore,
+      })
+      .execute();
+
+    return result.affected ?? 0;
   }
 }
 

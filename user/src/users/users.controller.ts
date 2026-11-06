@@ -6,7 +6,9 @@ import {
   Param,
   Patch,
   Post,
+  UseGuards,
 } from '@nestjs/common';
+import { ServiceAuthGuard } from '@restaurant/geolocation';
 import { UsersService } from './users.service';
 import { AuthenticateUserDto } from './dto/authenticate-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -14,8 +16,9 @@ import { UpdateUserDto } from './dto/update-user.dto';
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
-  
+
   @Post('authenticate')
+  @UseGuards(ServiceAuthGuard)
   authenticate(@Body() authenticateUserDto: AuthenticateUserDto) {
     return this.usersService.authenticate(authenticateUserDto);
   }

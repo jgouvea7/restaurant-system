@@ -6,10 +6,10 @@ import {
 } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { ElastiCacheService, EventPublisherService } from '@restaurant/aws';
-import type { AuthenticatedUser } from '@restaurant/geolocation';
 import { CourierService } from './courier.service';
 import {
   Courier,
+  CourierAssignmentStatus,
   CourierAvailability,
   VehicleType,
 } from './entities/courier.entity';
@@ -38,12 +38,16 @@ describe('CourierService', () => {
     available: CourierAvailability.AVAILABLE,
     reservedForOrderId: null,
     reservedAt: null,
+    reservationStatus: null,
+    reservationExpiresAt: null,
   } as Courier;
 
   beforeEach(() => {
     courier.available = CourierAvailability.AVAILABLE;
     courier.reservedForOrderId = null;
     courier.reservedAt = null;
+    courier.reservationStatus = null;
+    courier.reservationExpiresAt = null;
 
     const queryBuilder = {
       update: jest.fn().mockReturnThis(),
@@ -55,9 +59,11 @@ describe('CourierService', () => {
     repository = {
       findOne: jest.fn().mockResolvedValue(courier),
       save: jest.fn().mockImplementation((value) => Promise.resolve(value)),
-      find: jest.fn().mockResolvedValue([
-        { courierId: 'courier-1', vehicleType: VehicleType.MOTO },
-      ]),
+      find: jest
+        .fn()
+        .mockResolvedValue([
+          { courierId: 'courier-1', vehicleType: VehicleType.MOTO },
+        ]),
       createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
     };
 
@@ -236,7 +242,7 @@ describe('CourierService', () => {
         ownerId: null,
         courierId: 'courier-2',
         costumerId: null,
-      } as AuthenticatedUser),
+      }),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
@@ -292,5 +298,116 @@ describe('CourierService', () => {
     expect(
       (result.user as unknown as { password?: string }).password,
     ).toBeUndefined();
+  });
+
+  it('accepts a pending reservation owned by the courier', async () => {
+    courier.available = CourierAvailability.UNAVAILABLE;
+    courier.reservedForOrderId = 'order-1';
+    courier.reservationStatus = CourierAssignmentStatus.PENDING;
+    courier.reservationExpiresAt = new Date(Date.now() + 60_000);
+
+    const result = await service.acceptAssignment(
+      'courier-1',
+      'courier-1',
+      'order-1',
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        courierId: 'courier-1',
+        orderId: 'order-1',
+        reservationStatus: CourierAssignmentStatus.ACCEPTED,
+      }),
+    );
+    expect(courier.reservationStatus).toBe(CourierAssignmentStatus.ACCEPTED);
+    expect(courier.reservationExpiresAt).toBeNull();
+    expect(eventPublisher.publish).toHaveBeenCalledWith(
+      'courier.assignment.accepted',
+      expect.objectContaining({
+        courierId: 'courier-1',
+        orderId: 'order-1',
+      }),
+      'user',
+    );
+  });
+
+  it('rejects an expired reservation when accepting', async () => {
+    courier.available = CourierAvailability.UNAVAILABLE;
+    courier.reservedForOrderId = 'order-1';
+    courier.reservationStatus = CourierAssignmentStatus.PENDING;
+    courier.reservationExpiresAt = new Date(Date.now() - 1000);
+
+    await expect(
+      service.acceptAssignment('courier-1', 'courier-1', 'order-1'),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(eventPublisher.publish).toHaveBeenCalledWith(
+      'courier.assignment.expired',
+      expect.objectContaining({
+        courierId: 'courier-1',
+        orderId: 'order-1',
+      }),
+      'user',
+    );
+  });
+
+  it('rejects and releases a reservation for the courier', async () => {
+    courier.available = CourierAvailability.UNAVAILABLE;
+    courier.reservedForOrderId = 'order-1';
+    courier.reservationStatus = CourierAssignmentStatus.PENDING;
+
+    const result = await service.rejectAssignment(
+      'courier-1',
+      'courier-1',
+      'order-1',
+      'sem tempo',
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        courierId: 'courier-1',
+        orderId: 'order-1',
+        released: true,
+      }),
+    );
+    expect(courier.reservedForOrderId).toBeNull();
+    expect(courier.available).toBe(CourierAvailability.AVAILABLE);
+    expect(eventPublisher.publish).toHaveBeenCalledWith(
+      'courier.assignment.rejected',
+      { courierId: 'courier-1', orderId: 'order-1', reason: 'sem tempo' },
+      'user',
+    );
+  });
+
+  it('does not let another courier accept the reservation', async () => {
+    courier.reservedForOrderId = 'order-1';
+
+    await expect(
+      service.acceptAssignment('courier-1', 'courier-2', 'order-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('releases pending reservations that passed the expiration', async () => {
+    const expired = {
+      ...courier,
+      available: CourierAvailability.UNAVAILABLE,
+      reservedForOrderId: 'order-1',
+      reservationStatus: CourierAssignmentStatus.PENDING,
+      reservationExpiresAt: new Date(Date.now() - 1000),
+    } as Courier;
+    repository.find.mockResolvedValue([expired]);
+
+    const released = await service.releaseExpiredReservations();
+
+    expect(released).toBe(1);
+    expect(expired.reservedForOrderId).toBeNull();
+    expect(expired.available).toBe(CourierAvailability.AVAILABLE);
+    expect(eventPublisher.publish).toHaveBeenCalledWith(
+      'courier.assignment.expired',
+      expect.objectContaining({
+        courierId: 'courier-1',
+        orderId: 'order-1',
+      }),
+      'user',
+    );
   });
 });

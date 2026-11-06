@@ -214,10 +214,7 @@ describe('OrdersService', () => {
   });
 
   it('updates the status and publishes order.status.changed', async () => {
-    const result = await service.updateStatus(
-      'order-1',
-      OrderStatus.CONFIRMED,
-    );
+    const result = await service.updateStatus('order-1', OrderStatus.CONFIRMED);
 
     expect(result.status).toBe(OrderStatus.CONFIRMED);
     expect(eventPublisher.publish).toHaveBeenCalledWith(
@@ -343,5 +340,43 @@ describe('OrdersService', () => {
     await expect(
       service.assignCourier('order-1', ownerUser, 'courier-1'),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('returns the order to ready when the courier assignment fails', async () => {
+    order.status = OrderStatus.OUT_FOR_DELIVERY;
+    order.courierId = 'courier-1';
+    order.courierAssignedAt = new Date();
+
+    const result = await service.handleCourierAssignmentFailure(
+      'order-1',
+      'courier-1',
+    );
+
+    expect(result?.status).toBe(OrderStatus.READY);
+    expect(result?.courierId).toBeNull();
+    expect(eventPublisher.publish).toHaveBeenCalledWith(
+      'order.status.changed',
+      expect.objectContaining({
+        orderId: 'order-1',
+        status: OrderStatus.READY,
+        previousStatus: OrderStatus.OUT_FOR_DELIVERY,
+      }),
+      'restaurant',
+      expect.anything(),
+    );
+  });
+
+  it('ignores assignment failures from a different courier', async () => {
+    order.status = OrderStatus.OUT_FOR_DELIVERY;
+    order.courierId = 'courier-2';
+
+    const result = await service.handleCourierAssignmentFailure(
+      'order-1',
+      'courier-1',
+    );
+
+    expect(result?.status).toBe(OrderStatus.OUT_FOR_DELIVERY);
+    expect(result?.courierId).toBe('courier-2');
+    expect(eventPublisher.publish).not.toHaveBeenCalled();
   });
 });

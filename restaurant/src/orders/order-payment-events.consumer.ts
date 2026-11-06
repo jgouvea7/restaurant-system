@@ -1,5 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import {
+  CourierAssignmentExpiredEvent,
+  CourierAssignmentRejectedEvent,
   DomainEvent,
   EVENT_TYPES,
   EventConsumerService,
@@ -33,6 +35,24 @@ export class OrderPaymentEventsConsumer implements OnApplicationBootstrap {
     if (event.type === EVENT_TYPES.PAYMENT_REJECTED) {
       const data = event.data as PaymentRejectedEvent;
       await this.ordersService.handlePaymentResult(data.orderId, false);
+      return;
+    }
+
+    if (event.type === EVENT_TYPES.COURIER_ASSIGNMENT_REJECTED) {
+      const data = event.data as CourierAssignmentRejectedEvent;
+      await this.ordersService.handleCourierAssignmentFailure(
+        data.orderId,
+        data.courierId,
+      );
+      return;
+    }
+
+    if (event.type === EVENT_TYPES.COURIER_ASSIGNMENT_EXPIRED) {
+      const data = event.data as CourierAssignmentExpiredEvent;
+      await this.ordersService.handleCourierAssignmentFailure(
+        data.orderId,
+        data.courierId,
+      );
       return;
     }
 

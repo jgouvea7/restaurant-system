@@ -216,8 +216,31 @@ resource "aws_sns_topic" "events" {
   }
 }
 
+resource "aws_sqs_queue" "restaurant_events_dlq" {
+  name                      = "restaurant-events-dlq"
+  message_retention_seconds = 1209600
+
+  tags = {
+    Name = "restaurant-events-dlq"
+  }
+}
+
+resource "aws_sqs_queue" "payment_events_dlq" {
+  name                      = "payment-events-dlq"
+  message_retention_seconds = 1209600
+
+  tags = {
+    Name = "payment-events-dlq"
+  }
+}
+
 resource "aws_sqs_queue" "restaurant_events" {
-  name = "restaurant-events"
+  name                       = "restaurant-events"
+  visibility_timeout_seconds = 30
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.restaurant_events_dlq.arn
+    maxReceiveCount     = 5
+  })
 
   tags = {
     Name = "restaurant-events"
@@ -225,7 +248,12 @@ resource "aws_sqs_queue" "restaurant_events" {
 }
 
 resource "aws_sqs_queue" "payment_events" {
-  name = "payment-events"
+  name                       = "payment-events"
+  visibility_timeout_seconds = 30
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.payment_events_dlq.arn
+    maxReceiveCount     = 5
+  })
 
   tags = {
     Name = "payment-events"
@@ -291,7 +319,12 @@ resource "aws_sns_topic_subscription" "restaurant_events" {
   raw_message_delivery = true
 
   filter_policy = jsonencode({
-    eventType = ["payment.approved", "payment.rejected"]
+    eventType = [
+      "payment.approved",
+      "payment.rejected",
+      "courier.assignment.rejected",
+      "courier.assignment.expired",
+    ]
   })
 }
 

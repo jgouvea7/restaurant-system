@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ObservabilityModule } from '@restaurant/geolocation';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { UsersModule } from './users/users.module';
@@ -13,21 +14,29 @@ import { OutboxModule } from './outbox/outbox.module';
 @Module({
   imports: [
     TypeOrmModule.forRoot({
-      type: "postgres",
-      host: process.env.DB_HOST ?? "localhost",
+      type: 'postgres',
+      host: process.env.DB_HOST ?? 'localhost',
       port: Number(process.env.DB_PORT ?? 17001),
-      username: process.env.DB_USER ?? "restaurant",
-      password: process.env.DB_PASSWORD ?? "restaurant1234",
-      database: process.env.DB_NAME ?? "users",
+      username: process.env.DB_USER ?? 'restaurant',
+      password: process.env.DB_PASSWORD ?? 'restaurant1234',
+      database: process.env.DB_NAME ?? 'users',
       autoLoadEntities: true,
       synchronize: process.env.DB_SYNCHRONIZE === 'true',
       migrations: [__dirname + '/migrations/*{.ts,.js}'],
       migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',
       retryAttempts: 30,
-      retryDelay: 2000
-    }),UsersModule, CostumerModule, CourierModule, AddressModule, OwnerModule, OutboxModule, HealthModule],
+      retryDelay: 2000,
+    }),
+    UsersModule,
+    CostumerModule,
+    CourierModule,
+    AddressModule,
+    OwnerModule,
+    OutboxModule,
+    HealthModule,
+    ObservabilityModule,
+  ],
   controllers: [AppController],
   providers: [AppService],
 })
-
 export class AppModule {}

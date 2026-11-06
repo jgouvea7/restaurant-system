@@ -3,18 +3,13 @@ import { DataSource, EntityManager } from 'typeorm';
 import {
   DomainEvent,
   EventIdempotencyStore,
+  EventMaintenanceStore,
   EventOutboxStore,
   IdempotencyClaim,
   StoredEvent,
 } from '@restaurant/aws';
-import {
-  OutboxEvent,
-  OutboxEventStatus,
-} from './outbox-event.entity';
-import {
-  ProcessedEvent,
-  ProcessedEventStatus,
-} from './processed-event.entity';
+import { OutboxEvent, OutboxEventStatus } from './outbox-event.entity';
+import { ProcessedEvent, ProcessedEventStatus } from './processed-event.entity';
 
 const LOCK_MS = 60_000;
 const MAX_BACKOFF_MS = 60_000;
@@ -22,7 +17,7 @@ const PROCESSING_TIMEOUT_MS = 120_000;
 
 @Injectable()
 export class TypeOrmEventStore
-  implements EventOutboxStore, EventIdempotencyStore
+  implements EventOutboxStore, EventIdempotencyStore, EventMaintenanceStore
 {
   private readonly logger = new Logger(TypeOrmEventStore.name);
 
@@ -109,16 +104,9 @@ export class TypeOrmEventStore
     });
   }
 
-  async markFailed(
-    id: string,
-    attempts: number,
-    error: string,
-  ): Promise<void> {
+  async markFailed(id: string, attempts: number, error: string): Promise<void> {
     const nextAttempts = attempts + 1;
-    const backoffMs = Math.min(
-      2 ** nextAttempts * 1000,
-      MAX_BACKOFF_MS,
-    );
+    const backoffMs = Math.min(2 ** nextAttempts * 1000, MAX_BACKOFF_MS);
 
     await this.dataSource.getRepository(OutboxEvent).update(id, {
       status: OutboxEventStatus.PENDING,
@@ -128,10 +116,7 @@ export class TypeOrmEventStore
     });
   }
 
-  async claim(
-    consumer: string,
-    eventId: string,
-  ): Promise<IdempotencyClaim> {
+  async claim(consumer: string, eventId: string): Promise<IdempotencyClaim> {
     const repository = this.dataSource.getRepository(ProcessedEvent);
     const now = new Date();
     const lockedUntil = new Date(now.getTime() + LOCK_MS);
@@ -150,11 +135,8 @@ export class TypeOrmEventStore
         });
         return 'acquired';
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : String(error);
-        this.logger.warn(
-          `Corrida ao reservar evento ${eventId}: ${message}`,
-        );
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Corrida ao reservar evento ${eventId}: ${message}`);
         return 'locked';
       }
     }
@@ -196,6 +178,40 @@ export class TypeOrmEventStore
       .getRepository(ProcessedEvent)
       .delete({ consumer, eventId, status: ProcessedEventStatus.PROCESSING });
   }
+
+  async purgePublishedBefore(publishedBefore: Date): Promise<number> {
+    const result = await this.dataSource
+      .getRepository(OutboxEvent)
+      .createQueryBuilder()
+      .delete()
+      .from(OutboxEvent)
+      .where(
+        'status = :status AND publishedAt IS NOT NULL AND publishedAt <= :publishedBefore',
+        {
+          status: OutboxEventStatus.PUBLISHED,
+          publishedBefore,
+        },
+      )
+      .execute();
+
+    return result.affected ?? 0;
+  }
+
+  async purgeProcessedBefore(processedBefore: Date): Promise<number> {
+    const result = await this.dataSource
+      .getRepository(ProcessedEvent)
+      .createQueryBuilder()
+      .delete()
+      .from(ProcessedEvent)
+      .where(
+        'status = :status AND processedAt IS NOT NULL AND processedAt <= :processedBefore',
+        {
+          status: ProcessedEventStatus.PROCESSED,
+          processedBefore,
+        },
+      )
+      .execute();
+
+    return result.affected ?? 0;
+  }
 }
-
-

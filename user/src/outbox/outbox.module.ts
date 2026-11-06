@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   EVENT_IDEMPOTENCY_STORE,
+  EVENT_MAINTENANCE_STORE,
   EVENT_OUTBOX_STORE,
 } from '@restaurant/aws';
 import { OutboxEvent } from './outbox-event.entity';
@@ -18,11 +19,16 @@ import { TypeOrmEventStore } from './typeorm-event.store';
       provide: EVENT_IDEMPOTENCY_STORE,
       useExisting: TypeOrmEventStore,
     },
+    {
+      provide: EVENT_MAINTENANCE_STORE,
+      useExisting: TypeOrmEventStore,
+    },
   ],
   exports: [
     TypeOrmEventStore,
     EVENT_OUTBOX_STORE,
     EVENT_IDEMPOTENCY_STORE,
+    EVENT_MAINTENANCE_STORE,
   ],
 })
 export class OutboxModule {}

@@ -13,6 +13,7 @@ import {
   AUTH_JWT,
   AuthenticatedUser,
   getAccessTokenSecret,
+  internalRequestHeaders,
 } from '@restaurant/geolocation';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -104,9 +105,7 @@ export class AuthService {
     return { revoked: true };
   }
 
-  private async createSession(
-    user: AuthenticatedUser,
-  ): Promise<TokenResponse> {
+  private async createSession(user: AuthenticatedUser): Promise<TokenResponse> {
     const { response, refreshTokenHash, refreshExpiresAt } =
       this.buildTokens(user);
 
@@ -181,7 +180,10 @@ export class AuthService {
     try {
       response = await fetch(`${baseUrl}/users/authenticate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...internalRequestHeaders('auth'),
+        },
         body: JSON.stringify({ email, password }),
         signal: AbortSignal.timeout(5000),
       });

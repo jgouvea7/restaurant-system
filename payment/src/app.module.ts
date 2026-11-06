@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ObservabilityModule } from '@restaurant/geolocation';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -25,6 +26,7 @@ import { OutboxModule } from './outbox/outbox.module';
     PaymentsModule,
     OutboxModule,
     HealthModule,
+    ObservabilityModule,
   ],
   controllers: [AppController],
   providers: [AppService],
