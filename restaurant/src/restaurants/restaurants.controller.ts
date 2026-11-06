@@ -1,6 +1,5 @@
 import {
   Controller,
-  ForbiddenException,
   Get,
   Post,
   Body,
@@ -33,13 +32,7 @@ export class RestaurantsController {
     @Body() createRestaurantDto: CreateRestaurantDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    if (!user.ownerId || createRestaurantDto.ownerUserId !== user.ownerId) {
-      throw new ForbiddenException(
-        'Restaurante deve ser criado pelo proprio owner',
-      );
-    }
-
-    return this.restaurantsService.create(createRestaurantDto);
+    return this.restaurantsService.create(createRestaurantDto, user.ownerId);
   }
 
   @Get()
@@ -75,31 +68,25 @@ export class RestaurantsController {
   @Patch(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(AUTH_ROLES.OWNER)
-  async update(
+  update(
     @Param('id') id: string,
     @Body() updateRestaurantDto: UpdateRestaurantDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    await this.assertOwner(id, user);
-    return this.restaurantsService.update(id, updateRestaurantDto);
+    return this.restaurantsService.updateForOwner(
+      id,
+      updateRestaurantDto,
+      user.ownerId,
+    );
   }
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(AUTH_ROLES.OWNER)
-  async remove(
+  remove(
     @Param('id') id: string,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    await this.assertOwner(id, user);
-    return this.restaurantsService.remove(id);
-  }
-
-  private assertOwner(id: string, user: AuthenticatedUser) {
-    if (!user.ownerId) {
-      throw new ForbiddenException('Owner sem vinculo');
-    }
-
-    return this.restaurantsService.ensureOwned(id, user.ownerId);
+    return this.restaurantsService.removeForOwner(id, user.ownerId);
   }
 }

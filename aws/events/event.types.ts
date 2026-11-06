@@ -103,3 +103,26 @@ export interface DomainEvent<T extends EventType = EventType> {
   occurredAt: string;
   data: EventPayloads[T];
 }
+
+export interface StoredEvent<T extends EventType = EventType>
+  extends DomainEvent<T> {
+  attempts: number;
+}
+
+export interface EventOutboxStore {
+  save(event: DomainEvent, manager?: unknown): Promise<void>;
+  claimPending(limit: number): Promise<StoredEvent[]>;
+  markPublished(id: string): Promise<void>;
+  markFailed(id: string, attempts: number, error: string): Promise<void>;
+}
+
+export type IdempotencyClaim = 'acquired' | 'processed' | 'locked';
+
+export interface EventIdempotencyStore {
+  claim(consumer: string, eventId: string): Promise<IdempotencyClaim>;
+  markProcessed(consumer: string, eventId: string): Promise<void>;
+  release(consumer: string, eventId: string): Promise<void>;
+}
+
+export const EVENT_OUTBOX_STORE = Symbol('EVENT_OUTBOX_STORE');
+export const EVENT_IDEMPOTENCY_STORE = Symbol('EVENT_IDEMPOTENCY_STORE');

@@ -232,14 +232,16 @@ Endpoints protegidos nesta fase:
 
 | Serviço | Endpoint | Regra |
 | --- | --- | --- |
-| `restaurant` | `POST /restaurants` | `owner`; `ownerUserId` deve ser o próprio owner |
+| `restaurant` | `POST /restaurants` | `owner`; o owner é derivado do token |
 | `restaurant` | `POST/PATCH/DELETE /products` | `owner`; produto/restaurante do próprio owner |
-| `restaurant` | `POST /orders` | `costumer`; `costumerUserId` deve ser o próprio usuário |
+| `restaurant` | `POST /orders` | `costumer`; o cliente é derivado do token |
 | `restaurant` | `GET /orders` e `GET /orders/:id` | owner do restaurante, cliente do pedido ou entregador atribuído |
 | `restaurant` | `PATCH /orders/:id/status` | owner do restaurante, cliente (apenas cancelar) ou entregador (apenas `delivered`) |
-| `restaurant` | `PATCH /orders/:id/courier` | `owner` do restaurante; atribui entregador e inicia a entrega |
+| `restaurant` | `PATCH /orders/:id/courier` | `owner` do restaurante; reserva o entregador e inicia a entrega |
 | `payment` | `GET /payments/:orderId` | qualquer usuário autenticado |
 | `user` | `PATCH /courier/:id/location`, `/availability` e `POST /courier/:id/available` | `courier` dono do id |
+| `user` | `POST /courier/:id/reserve` | `owner`; reserva o entregador para um pedido |
+| `user` | `POST /courier/:id/release` | `owner`/`costumer` autenticado ou o próprio `courier` |
 
 As rotas de cadastro (`POST /costumer`, `/owner`, `/courier`), o cardápio público e a busca de restaurantes/entregadores próximos continuam abertos.
 
@@ -279,7 +281,6 @@ curl -X POST http://localhost:8081/orders \
   -H "Content-Type: application/json" \
   -d '{
     "restaurantId": "RESTAURANT_ID",
-    "costumerUserId": "COSTUMER_USER_ID",
     "paymentMethod": "pix",
     "deliveryAddress": "Rua Exemplo, 123",
     "items": [{ "productId": "PRODUCT_ID", "quantity": 2 }]
@@ -308,6 +309,8 @@ O processamento é pelo menos uma vez, então `PaymentsService` ignora pedidos q
 
 O pacote `aws/events/` define o envelope `DomainEvent`, os tipos de evento e os serviços `EventPublisherService` (SNS) e `EventConsumerService` (SQS). O `EventConsumerService` usa long polling com `start()`/`stop()` e é iniciado no `onApplicationBootstrap` de cada consumer.
 
+Os serviços `restaurant`, `payment` e `user` usam um **outbox persistente** (`outbox_events`). Criação de restaurante, criação de pedido e mudança de status gravam o estado e o evento na mesma transação; nos demais fluxos o evento é persistido de forma durável e o `OutboxRelayService` publica no SNS em background, com tentativas, backoff exponencial e recuperação de eventos travados em `processing`. Consumers registram `processed_events` por `(consumer, eventId)`, com lock e liberação em caso de falha, para evitar processamento duplicado.
+
 O Terraform provisiona duas filas com filtros por `eventType`:
 
 | Fila | Eventos | Consumidor |
@@ -330,6 +333,22 @@ Eventos publicados nesta fase:
 | `payment.rejected` | `payment` |
 
 As variáveis `SNS_TOPIC_ARN` e `SQS_QUEUE_URL` configuram os clientes. O `restaurant` consulta o serviço de usuários por `USER_SERVICE_URL` (padrão `http://floci:8080`).
+
+### Reserva de entregador
+
+A atribuição usa reserva explícita no `user`: `POST /courier/:id/reserve` marca o entregador como indisponível e grava `reservedForOrderId`; `POST /courier/:id/release` libera automaticamente o entregador quando o pedido vira `delivered` ou `cancelled`. As chamadas internas reutilizam o token do owner/entregador/cliente que originou a mudança.
+
+### Health, observabilidade e limites
+
+Cada serviço expõe `GET /health`, com verificação do PostgreSQL (e também do Redis em `restaurant` e `user`). O ALB usa `/health` como health check. As respostas incluem `x-request-id`, e cada requisição gera um log JSON com método, caminho, status e duração.
+
+O limitador em memória aplica `RATE_LIMIT_MAX_REQUESTS` (padrão `240`) por `RATE_LIMIT_WINDOW_MS` (padrão `60000`) por IP, ignorando `/health`.
+
+### Migrações
+
+O schema deixou de usar `synchronize` por padrão. Cada serviço possui migrações versionadas em `src/migrations`, executadas no boot com `migrationsRun`. Para habilitar o modo antigo apenas em desenvolvimento, use `DB_SYNCHRONIZE=true`; para desabilitar a execução automática, use `DB_MIGRATIONS_RUN=false`.
+
+O relay do outbox pode ser ajustado por `OUTBOX_RELAY_ENABLED`, `OUTBOX_RELAY_INTERVAL_MS` e `OUTBOX_BATCH_SIZE`.
 
 ## Como executar
 
@@ -504,7 +523,7 @@ O Floci é um emulador, não a AWS real. Alguns pontos importantes:
 
 ## Próximos passos
 
-- Adicionar outbox e idempotência persistente para eventos críticos.
-- Adicionar health checks específicos (`/health`) e observabilidade.
-- Modelar reserva de entregador, aceite/recusa e liberação automática de disponibilidade.
-- Adicionar migrações versionadas no lugar de `synchronize`.
+- Adicionar autenticação serviço a serviço nas chamadas internas.
+- Implementar aceite/recusa explícitos do entregador e expiração de reservas.
+- Adicionar limpeza/particionamento das tabelas de outbox e eventos processados.
+- Evoluir o rate limit em memória para um store distribuído no Redis.

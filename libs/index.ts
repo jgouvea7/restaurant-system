@@ -5,3 +5,5 @@ export * from './auth/roles.decorator';
 export * from './auth/roles.guard';
 export * from './geolocation/geolocation.module';
 export * from './geolocation/geolocation.service';
+export * from './observability/request-context.middleware';
+export * from './observability/rate-limit.guard';

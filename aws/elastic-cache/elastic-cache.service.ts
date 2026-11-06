@@ -68,6 +68,10 @@ export class ElastiCacheService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  async ping(): Promise<void> {
+    await this.client.ping();
+  }
+
   async addLocation(key: string, location: GeoLocation): Promise<number> {
     return this.client.geoadd(
       key,

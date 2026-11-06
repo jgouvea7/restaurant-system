@@ -7,6 +7,7 @@ import {
 } from '@restaurant/aws';
 import { DataSource } from 'typeorm';
 import { RestaurantsService } from './restaurants.service';
+import { RestaurantAccessService } from './restaurant-access.service';
 
 describe('RestaurantsService', () => {
   let service: RestaurantsService;
@@ -15,6 +16,9 @@ describe('RestaurantsService', () => {
     findNearby: jest.Mock;
     addLocation: jest.Mock;
     removeLocation: jest.Mock;
+  };
+  let restaurantAccess: {
+    findByOwnerOrFail: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -41,9 +45,20 @@ describe('RestaurantsService', () => {
       removeLocation: jest.fn().mockResolvedValue(1),
     };
 
+    restaurantAccess = {
+      findByOwnerOrFail: jest.fn().mockResolvedValue({
+        id: 'restaurant-1',
+        name: 'Restaurante',
+      }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RestaurantsService,
+        {
+          provide: RestaurantAccessService,
+          useValue: restaurantAccess,
+        },
         { provide: DataSource, useValue: dataSource },
         { provide: GeolocationService, useValue: {} },
         {
@@ -98,5 +113,15 @@ describe('RestaurantsService', () => {
       'restaurants:geo',
       'restaurant-1',
     );
+  });
+
+  it('checks ownership before removing a restaurant', async () => {
+    await service.removeForOwner('restaurant-1', 'owner-1');
+
+    expect(restaurantAccess.findByOwnerOrFail).toHaveBeenCalledWith(
+      'restaurant-1',
+      'owner-1',
+    );
+    expect(repository.delete).toHaveBeenCalledWith('restaurant-1');
   });
 });

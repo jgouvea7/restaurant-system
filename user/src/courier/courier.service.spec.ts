@@ -1,6 +1,12 @@
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { ElastiCacheService, EventPublisherService } from '@restaurant/aws';
+import type { AuthenticatedUser } from '@restaurant/geolocation';
 import { CourierService } from './courier.service';
 import {
   Courier,
@@ -14,6 +20,7 @@ describe('CourierService', () => {
     findOne: jest.Mock;
     save: jest.Mock;
     find: jest.Mock;
+    createQueryBuilder: jest.Mock;
   };
   let elastiCacheService: {
     addLocation: jest.Mock;
@@ -29,15 +36,29 @@ describe('CourierService', () => {
     courierId: 'courier-1',
     vehicleType: VehicleType.MOTO,
     available: CourierAvailability.AVAILABLE,
+    reservedForOrderId: null,
+    reservedAt: null,
   } as Courier;
 
   beforeEach(() => {
+    courier.available = CourierAvailability.AVAILABLE;
+    courier.reservedForOrderId = null;
+    courier.reservedAt = null;
+
+    const queryBuilder = {
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+
     repository = {
       findOne: jest.fn().mockResolvedValue(courier),
       save: jest.fn().mockImplementation((value) => Promise.resolve(value)),
       find: jest.fn().mockResolvedValue([
         { courierId: 'courier-1', vehicleType: VehicleType.MOTO },
       ]),
+      createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
     };
 
     const dataSource = {
@@ -69,7 +90,12 @@ describe('CourierService', () => {
   });
 
   it('stores the courier location and event when the courier is available', async () => {
-    const result = await service.updateLocation('courier-1', -23.5, -46.6);
+    const result = await service.updateLocation(
+      'courier-1',
+      'courier-1',
+      -23.5,
+      -46.6,
+    );
 
     expect(elastiCacheService.addLocation).toHaveBeenCalledWith(
       'couriers:geo',
@@ -102,7 +128,7 @@ describe('CourierService', () => {
 
   it('rejects invalid coordinates', async () => {
     await expect(
-      service.updateLocation('courier-1', 120, -46.6),
+      service.updateLocation('courier-1', 'courier-1', 120, -46.6),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -112,12 +138,16 @@ describe('CourierService', () => {
     );
 
     await expect(
-      service.updateLocation('courier-1', -23.5, -46.6),
+      service.updateLocation('courier-1', 'courier-1', -23.5, -46.6),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
   it('sets availability in the database and Redis', async () => {
-    const result = await service.setCourierAvailability('courier-1', false);
+    const result = await service.setCourierAvailability(
+      'courier-1',
+      'courier-1',
+      false,
+    );
 
     expect(repository.save).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -135,6 +165,85 @@ describe('CourierService', () => {
       'user',
     );
     expect(result.available).toBe(CourierAvailability.UNAVAILABLE);
+  });
+
+  it('reserves an available courier for an order', async () => {
+    const result = await service.reserveCourier('courier-1', 'order-1');
+
+    expect(repository.createQueryBuilder).toHaveBeenCalled();
+    expect(elastiCacheService.removeFromSet).toHaveBeenCalledWith(
+      'couriers:available',
+      'courier-1',
+    );
+    expect(eventPublisher.publish).toHaveBeenCalledWith(
+      'courier.availability.changed',
+      { courierId: 'courier-1', available: false },
+      'user',
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        courierId: 'courier-1',
+        orderId: 'order-1',
+        available: CourierAvailability.UNAVAILABLE,
+      }),
+    );
+  });
+
+  it('rejects reserving an unavailable courier', async () => {
+    courier.available = CourierAvailability.UNAVAILABLE;
+
+    await expect(
+      service.reserveCourier('courier-1', 'order-1'),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('releases a reserved courier back to available', async () => {
+    courier.available = CourierAvailability.UNAVAILABLE;
+    courier.reservedForOrderId = 'order-1';
+
+    const result = await service.releaseCourier('courier-1', 'order-1');
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        courierId: 'courier-1',
+        orderId: 'order-1',
+        available: CourierAvailability.AVAILABLE,
+        released: true,
+      }),
+    );
+    expect(repository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reservedForOrderId: null,
+        available: CourierAvailability.AVAILABLE,
+      }),
+    );
+  });
+
+  it('rejects releasing a courier reserved for another order', async () => {
+    courier.reservedForOrderId = 'order-2';
+
+    await expect(
+      service.releaseCourier('courier-1', 'order-1'),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('rejects release by another courier', async () => {
+    await expect(
+      service.releaseCourier('courier-1', 'order-1', {
+        userId: 'user-2',
+        email: 'courier-2@example.com',
+        roles: ['courier'],
+        ownerId: null,
+        courierId: 'courier-2',
+        costumerId: null,
+      } as AuthenticatedUser),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('rejects updates from another courier', async () => {
+    await expect(
+      service.setCourierAvailability('courier-1', 'courier-2', false),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('returns only available couriers nearby', async () => {

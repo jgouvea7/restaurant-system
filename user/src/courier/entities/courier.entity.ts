@@ -23,6 +23,12 @@ export class Courier {
     @Column()
     available!: CourierAvailability;
 
+    @Column({ type: "uuid", nullable: true })
+    reservedForOrderId!: string | null;
+
+    @Column({ type: "timestamp", precision: 6, nullable: true })
+    reservedAt!: Date | null;
+
     @OneToOne(() => User, (user) => user.courier)
     @JoinColumn({ name: "user_id" })
     user!: User;

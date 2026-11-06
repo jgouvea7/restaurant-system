@@ -9,26 +9,42 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { Product } from './entities/product.entity';
 import { Restaurant } from '../restaurants/entities/restaurant.entity';
+import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 
 @Injectable()
 export class ProductsService {
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly restaurantAccess: RestaurantAccessService,
+  ) {}
 
-  async ensureOwnedByRestaurant(restaurantId: string, ownerId: string) {
-    const restaurant = await this.dataSource
-      .getRepository(Restaurant)
-      .findOne({ where: { id: restaurantId } });
-
-    if (!restaurant) {
-      throw new NotFoundException('Restaurante nao encontrado');
-    }
-
-    if (restaurant.ownerUserId !== ownerId) {
-      throw new ForbiddenException('Restaurante de outro owner');
-    }
+  async createForOwner(dto: CreateProductDto, ownerId: string | null) {
+    await this.restaurantAccess.findByOwnerOrFail(dto.restaurantId, ownerId);
+    return this.create(dto);
   }
 
-  async ensureOwnedByProduct(productId: string, ownerId: string) {
+  async updateForOwner(
+    id: string,
+    dto: UpdateProductDto,
+    ownerId: string | null,
+  ) {
+    await this.assertProductOwner(id, ownerId);
+    return this.update(id, dto);
+  }
+
+  async removeForOwner(id: string, ownerId: string | null) {
+    await this.assertProductOwner(id, ownerId);
+    return this.remove(id);
+  }
+
+  private async assertProductOwner(
+    productId: string,
+    ownerId: string | null,
+  ): Promise<void> {
+    if (!ownerId) {
+      throw new ForbiddenException('Owner sem vinculo');
+    }
+
     const product = await this.dataSource.getRepository(Product).findOne({
       where: { id: productId },
       relations: { restaurant: true },

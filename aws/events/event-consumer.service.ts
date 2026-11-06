@@ -1,10 +1,21 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  Optional,
+} from '@nestjs/common';
 import {
   DeleteMessageCommand,
   ReceiveMessageCommand,
   SQSClient,
 } from '@aws-sdk/client-sqs';
-import { DomainEvent } from './event.types';
+import {
+  DomainEvent,
+  EVENT_IDEMPOTENCY_STORE,
+  EventIdempotencyStore,
+  IdempotencyClaim,
+} from './event.types';
 
 export interface EventConsumerOptions {
   maxMessages?: number;
@@ -23,7 +34,11 @@ export class EventConsumerService implements OnModuleDestroy {
   private running = false;
   private timer?: ReturnType<typeof setTimeout>;
 
-  constructor() {
+  constructor(
+    @Optional()
+    @Inject(EVENT_IDEMPOTENCY_STORE)
+    private readonly idempotency?: EventIdempotencyStore,
+  ) {
     this.queueUrl = process.env.SQS_QUEUE_URL;
     this.client = new SQSClient(this.buildConfig());
   }
@@ -102,18 +117,26 @@ export class EventConsumerService implements OnModuleDestroy {
     for (const message of response.Messages ?? []) {
       try {
         const event = this.parseEvent(message.Body);
+        const claim = await this.claim(event.id);
 
-        await handler(event);
-
-        if (message.ReceiptHandle) {
-          await this.client.send(
-            new DeleteMessageCommand({
-              QueueUrl: this.queueUrl,
-              ReceiptHandle: message.ReceiptHandle,
-            }),
-          );
+        if (claim === 'locked') {
+          continue;
         }
 
+        if (claim === 'processed') {
+          await this.delete(message.ReceiptHandle);
+          continue;
+        }
+
+        try {
+          await handler(event);
+          await this.idempotency?.markProcessed(this.consumerName, event.id);
+        } catch (error) {
+          await this.idempotency?.release(this.consumerName, event.id);
+          throw error;
+        }
+
+        await this.delete(message.ReceiptHandle);
         processed += 1;
       } catch (error) {
         const messageText =
@@ -123,6 +146,31 @@ export class EventConsumerService implements OnModuleDestroy {
     }
 
     return processed;
+  }
+
+  private get consumerName(): string {
+    return process.env.EVENT_CONSUMER_NAME ?? process.env.SERVICE_NAME ?? 'unknown';
+  }
+
+  private async claim(eventId: string): Promise<IdempotencyClaim> {
+    if (!this.idempotency) {
+      return 'acquired';
+    }
+
+    return this.idempotency.claim(this.consumerName, eventId);
+  }
+
+  private async delete(receiptHandle: string | undefined): Promise<void> {
+    if (!receiptHandle) {
+      return;
+    }
+
+    await this.client.send(
+      new DeleteMessageCommand({
+        QueueUrl: this.queueUrl,
+        ReceiptHandle: receiptHandle,
+      }),
+    );
   }
 
   private parseEvent(body: string | undefined): DomainEvent {

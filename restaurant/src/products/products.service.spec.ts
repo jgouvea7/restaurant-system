@@ -1,6 +1,7 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { ProductsService } from './products.service';
+import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 
 describe('ProductsService', () => {
   let service: ProductsService;
@@ -12,6 +13,7 @@ describe('ProductsService', () => {
     delete: jest.Mock;
   };
   let restaurantRepository: { findOne: jest.Mock };
+  let restaurantAccess: { findByOwnerOrFail: jest.Mock };
 
   beforeEach(() => {
     repository = {
@@ -36,7 +38,16 @@ describe('ProductsService', () => {
       ),
     } as unknown as DataSource;
 
-    service = new ProductsService(dataSource);
+    restaurantAccess = {
+      findByOwnerOrFail: jest.fn().mockResolvedValue({
+        id: 'restaurant-1',
+      }),
+    };
+
+    service = new ProductsService(
+      dataSource,
+      restaurantAccess as unknown as RestaurantAccessService,
+    );
   });
 
   it('creates a product with a normalized price', async () => {
@@ -84,5 +95,21 @@ describe('ProductsService', () => {
 
     expect(repository.delete).toHaveBeenCalledWith('product-1');
     expect(result).toEqual(expect.objectContaining({ id: 'product-1' }));
+  });
+
+  it('checks restaurant ownership before creating', async () => {
+    await service.createForOwner(
+      {
+        name: 'Pizza',
+        price: 10,
+        restaurantId: 'restaurant-1',
+      },
+      'owner-1',
+    );
+
+    expect(restaurantAccess.findByOwnerOrFail).toHaveBeenCalledWith(
+      'restaurant-1',
+      'owner-1',
+    );
   });
 });
