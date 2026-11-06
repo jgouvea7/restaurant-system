@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -20,6 +22,8 @@ import {
   EVENT_TYPES,
   EventPublisherService,
 } from '@restaurant/aws';
+import { AUTH_ROLES } from '@restaurant/geolocation';
+import type { AuthenticatedUser } from '@restaurant/geolocation';
 
 export interface FindNearbyCouriersInput {
   latitude: number;
@@ -61,6 +65,8 @@ export class CourierService {
       const courierUser = manager.create(Courier, {
         vehicleType: dto.courier.vehicleType,
         available: CourierAvailability.UNAVAILABLE,
+        reservedForOrderId: null,
+        reservedAt: null,
         user: user,
       });
 
@@ -83,7 +89,12 @@ export class CourierService {
     });
   }
 
-  async updateCourierStatus(courierId: string) {
+  async updateCourierStatus(
+    courierId: string,
+    requesterCourierId: string | null,
+  ) {
+    this.assertSameCourier(courierId, requesterCourierId);
+
     const courier = await this.findCourier(courierId);
 
     return this.applyAvailability(
@@ -92,7 +103,13 @@ export class CourierService {
     );
   }
 
-  async setCourierAvailability(courierId: string, available: boolean) {
+  async setCourierAvailability(
+    courierId: string,
+    requesterCourierId: string | null,
+    available: boolean,
+  ) {
+    this.assertSameCourier(courierId, requesterCourierId);
+
     if (typeof available !== 'boolean') {
       throw new BadRequestException('available deve ser booleano');
     }
@@ -102,11 +119,119 @@ export class CourierService {
     return this.applyAvailability(courier, available);
   }
 
+  async reserveCourier(courierId: string, orderId: string) {
+    if (!orderId) {
+      throw new BadRequestException('orderId e obrigatorio');
+    }
+
+    const courier = await this.findCourier(courierId);
+
+    if (courier.reservedForOrderId === orderId) {
+      return this.reservationResult(courier, orderId);
+    }
+
+    if (
+      courier.reservedForOrderId ||
+      courier.available !== CourierAvailability.AVAILABLE
+    ) {
+      throw new ConflictException('Entregador indisponivel');
+    }
+
+    const reservedAt = new Date();
+    const result = await this.dataSource
+      .getRepository(Courier)
+      .createQueryBuilder()
+      .update(Courier)
+      .set({
+        available: CourierAvailability.UNAVAILABLE,
+        reservedForOrderId: orderId,
+        reservedAt,
+      })
+      .where(
+        'courierId = :courierId AND available = :available AND reservedForOrderId IS NULL',
+        {
+          courierId,
+          available: CourierAvailability.AVAILABLE,
+        },
+      )
+      .execute();
+
+    if (!result.affected) {
+      throw new ConflictException('Entregador indisponivel');
+    }
+
+    await this.removeFromAvailableSet(courierId);
+    await this.eventPublisher.publish(
+      EVENT_TYPES.COURIER_AVAILABILITY_CHANGED,
+      { courierId, available: false },
+      'user',
+    );
+
+    return {
+      courierId,
+      orderId,
+      available: CourierAvailability.UNAVAILABLE,
+      reservedAt: reservedAt.toISOString(),
+    };
+  }
+
+  async releaseCourier(
+    courierId: string,
+    orderId: string,
+    requester?: AuthenticatedUser,
+  ) {
+    if (!orderId) {
+      throw new BadRequestException('orderId e obrigatorio');
+    }
+
+    if (
+      requester &&
+      !requester.roles.includes(AUTH_ROLES.OWNER) &&
+      requester.roles.includes(AUTH_ROLES.COURIER)
+    ) {
+      this.assertSameCourier(courierId, requester.courierId);
+    }
+
+    const courier = await this.findCourier(courierId);
+
+    if (
+      courier.reservedForOrderId &&
+      courier.reservedForOrderId !== orderId
+    ) {
+      throw new ConflictException(
+        'Entregador reservado para outro pedido',
+      );
+    }
+
+    if (!courier.reservedForOrderId) {
+      return {
+        courierId,
+        orderId,
+        available: courier.available,
+        released: false,
+      };
+    }
+
+    courier.reservedForOrderId = null;
+    courier.reservedAt = null;
+    const released = await this.applyAvailability(courier, true);
+
+    return {
+      courierId,
+      orderId,
+      available: released.available,
+      released: true,
+    };
+  }
+
   async updateLocation(
     courierId: string,
+    requesterCourierId: string | null,
     latitude: number,
     longitude: number,
   ) {
+    this.assertSameCourier(courierId, requesterCourierId);
+
     const courier = await this.findCourier(courierId);
     this.validateCoordinates(latitude, longitude);
 
@@ -281,6 +406,15 @@ export class CourierService {
     };
   }
 
+  private assertSameCourier(
+    courierId: string,
+    requesterCourierId: string | null,
+  ): void {
+    if (!requesterCourierId || requesterCourierId !== courierId) {
+      throw new ForbiddenException('Entregador de outro usuario');
+    }
+  }
+
   private async findCourier(courierId: string): Promise<Courier> {
     const courier = await this.dataSource.getRepository(Courier).findOne({
       where: { courierId },
@@ -293,10 +427,39 @@ export class CourierService {
     return courier;
   }
 
+  private reservationResult(courier: Courier, orderId: string) {
+    return {
+      courierId: courier.courierId,
+      orderId,
+      available: courier.available,
+      reservedAt: courier.reservedAt?.toISOString() ?? null,
+    };
+  }
+
+  private async removeFromAvailableSet(courierId: string): Promise<void> {
+    try {
+      await this.elastiCacheService.removeFromSet(
+        ELASTIC_CACHE_KEYS.COURIERS_AVAILABLE,
+        courierId,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Nao foi possivel remover o entregador ${courierId} da lista de disponiveis: ${message}`,
+      );
+    }
+  }
+
   private async applyAvailability(
     courier: Courier,
     available: boolean,
   ): Promise<Courier> {
+    if (available && courier.reservedForOrderId) {
+      throw new BadRequestException(
+        'Entregador reservado para um pedido',
+      );
+    }
+
     courier.available = available
       ? CourierAvailability.AVAILABLE
       : CourierAvailability.UNAVAILABLE;

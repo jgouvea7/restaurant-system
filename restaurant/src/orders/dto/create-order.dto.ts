@@ -5,7 +5,6 @@ export class CreateOrderItemDto {
 
 export class CreateOrderDto {
   restaurantId!: string;
-  costumerUserId!: string;
   paymentMethod!: string;
   deliveryAddress?: string;
   items!: CreateOrderItemDto[];

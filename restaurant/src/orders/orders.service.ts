@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
@@ -20,6 +21,7 @@ import { Order, OrderStatus } from './entities/order.entity';
 import { Product } from '../products/entities/product.entity';
 import { Restaurant } from '../restaurants/entities/restaurant.entity';
 import { RestaurantAddress } from '../restaurant-address/entities/restaurant-address.entity';
+import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 
 interface NearbyCourier {
   courierId: string;
@@ -56,10 +58,15 @@ export class OrdersService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly eventPublisher: EventPublisherService,
+    private readonly restaurantAccess: RestaurantAccessService,
   ) {}
 
-  async create(dto: CreateOrderDto) {
+  async create(dto: CreateOrderDto, user: AuthenticatedUser) {
     this.validateCreateOrder(dto);
+
+    if (!user.userId) {
+      throw new ForbiddenException('Cliente sem vinculo');
+    }
 
     const restaurant = await this.dataSource
       .getRepository(Restaurant)
@@ -112,7 +119,7 @@ export class OrdersService {
     const order = await this.dataSource.transaction(async (manager) => {
       const entity = manager.create(Order, {
         restaurantId: dto.restaurantId,
-        costumerUserId: dto.costumerUserId,
+        costumerUserId: user.userId,
         total: total.toFixed(2),
         status: OrderStatus.PENDING_PAYMENT,
         paymentMethod: dto.paymentMethod,
@@ -128,28 +135,31 @@ export class OrdersService {
         ),
       });
 
-      return manager.save(entity);
-    });
+      const saved = await manager.save(entity);
 
-    await this.eventPublisher.publish(
-      EVENT_TYPES.ORDER_CREATED,
-      {
-        orderId: order.id,
-        restaurantId: order.restaurantId,
-        costumerUserId: order.costumerUserId,
-        total,
-        paymentMethod: order.paymentMethod,
-        deliveryAddress: order.deliveryAddress,
-        items: items.map((item) => ({
-          productId: item.product.id,
-          productName: item.product.name,
-          unitPrice: item.unitPrice,
-          quantity: item.quantity,
-          subtotal: item.subtotal,
-        })),
-      },
-      'restaurant',
-    );
+      await this.eventPublisher.publish(
+        EVENT_TYPES.ORDER_CREATED,
+        {
+          orderId: saved.id,
+          restaurantId: saved.restaurantId,
+          costumerUserId: saved.costumerUserId,
+          total,
+          paymentMethod: saved.paymentMethod,
+          deliveryAddress: saved.deliveryAddress,
+          items: items.map((item) => ({
+            productId: item.product.id,
+            productName: item.product.name,
+            unitPrice: item.unitPrice,
+            quantity: item.quantity,
+            subtotal: item.subtotal,
+          })),
+        },
+        'restaurant',
+        manager,
+      );
+
+      return saved;
+    });
 
     return order;
   }
@@ -165,15 +175,16 @@ export class OrdersService {
       }
 
       if (restaurantId) {
-        await this.assertOwnedRestaurant(restaurantId, user.ownerId);
+        await this.restaurantAccess.findByOwnerOrFail(
+          restaurantId,
+          user.ownerId,
+        );
         return this.findAll(restaurantId, costumerUserId);
       }
 
-      const restaurants = await this.dataSource.getRepository(Restaurant).find({
-        where: { ownerUserId: user.ownerId },
-        select: { id: true },
-      });
-      const restaurantIds = restaurants.map((restaurant) => restaurant.id);
+      const restaurantIds = await this.restaurantAccess.listIdsByOwner(
+        user.ownerId,
+      );
 
       if (restaurantIds.length === 0) {
         return [];
@@ -254,6 +265,7 @@ export class OrdersService {
     id: string,
     status: OrderStatus,
     user: AuthenticatedUser,
+    authorization?: string,
   ) {
     const order = await this.findOne(id);
 
@@ -262,7 +274,10 @@ export class OrdersService {
         throw new ForbiddenException('Owner sem vinculo');
       }
 
-      await this.assertOwnedRestaurant(order.restaurantId, user.ownerId);
+      await this.restaurantAccess.findByOwnerOrFail(
+        order.restaurantId,
+        user.ownerId,
+      );
 
       if (status === OrderStatus.OUT_FOR_DELIVERY && !order.courierId) {
         throw new BadRequestException(
@@ -270,7 +285,7 @@ export class OrdersService {
         );
       }
 
-      return this.updateStatus(id, status);
+      return this.updateStatus(id, status, authorization);
     }
 
     if (user.roles.includes(AUTH_ROLES.COURIER)) {
@@ -284,7 +299,7 @@ export class OrdersService {
         );
       }
 
-      return this.updateStatus(id, status);
+      return this.updateStatus(id, status, authorization);
     }
 
     if (user.roles.includes(AUTH_ROLES.COSTUMER)) {
@@ -298,7 +313,7 @@ export class OrdersService {
         );
       }
 
-      return this.updateStatus(id, status);
+      return this.updateStatus(id, status, authorization);
     }
 
     throw new ForbiddenException('Permissao insuficiente');
@@ -306,11 +321,19 @@ export class OrdersService {
 
   async assignCourier(
     id: string,
-    ownerId: string,
+    user: AuthenticatedUser,
     courierId?: string,
+    authorization?: string,
   ) {
+    if (!user.ownerId) {
+      throw new ForbiddenException('Owner sem vinculo');
+    }
+
     const order = await this.findOne(id);
-    await this.assertOwnedRestaurant(order.restaurantId, ownerId);
+    await this.restaurantAccess.findByOwnerOrFail(
+      order.restaurantId,
+      user.ownerId,
+    );
 
     if (order.status === OrderStatus.OUT_FOR_DELIVERY && order.courierId) {
       return order;
@@ -326,31 +349,78 @@ export class OrdersService {
       ? await this.validateCourier(courierId.trim())
       : await this.findNearestCourier(order.restaurantId);
 
-    order.courierId = selectedCourierId;
-    order.courierAssignedAt = new Date();
-    await this.dataSource.getRepository(Order).save(order);
-
-    const updated = await this.updateStatus(
+    await this.reserveCourier(
+      selectedCourierId,
       order.id,
-      OrderStatus.OUT_FOR_DELIVERY,
+      authorization,
     );
 
-    await this.eventPublisher.publish(
-      EVENT_TYPES.ORDER_COURIER_ASSIGNED,
-      {
-        orderId: updated.id,
-        restaurantId: updated.restaurantId,
-        courierId: selectedCourierId,
-        status: updated.status,
-        assignedAt: order.courierAssignedAt.toISOString(),
-      },
-      'restaurant',
-    );
+    try {
+      const updated = await this.dataSource.transaction(async (manager) => {
+        const previousStatus = order.status;
+        const assignedAt = new Date();
 
-    return updated;
+        order.courierId = selectedCourierId;
+        order.courierAssignedAt = assignedAt;
+        order.status = OrderStatus.OUT_FOR_DELIVERY;
+
+        const saved = await manager.save(order);
+
+        await this.eventPublisher.publish(
+          EVENT_TYPES.ORDER_STATUS_CHANGED,
+          {
+            orderId: saved.id,
+            restaurantId: saved.restaurantId,
+            status: saved.status,
+            previousStatus,
+          },
+          'restaurant',
+          manager,
+        );
+
+        await this.eventPublisher.publish(
+          EVENT_TYPES.ORDER_COURIER_ASSIGNED,
+          {
+            orderId: saved.id,
+            restaurantId: saved.restaurantId,
+            courierId: selectedCourierId,
+            status: saved.status,
+            assignedAt: assignedAt.toISOString(),
+          },
+          'restaurant',
+          manager,
+        );
+
+        return saved;
+      });
+
+      return updated;
+    } catch (error) {
+      try {
+        await this.releaseCourier(
+          selectedCourierId,
+          order.id,
+          authorization,
+        );
+      } catch (releaseError) {
+        const message =
+          releaseError instanceof Error
+            ? releaseError.message
+            : String(releaseError);
+        this.logger.error(
+          `Falha ao liberar entregador ${selectedCourierId} apos erro na atribuicao: ${message}`,
+        );
+      }
+
+      throw error;
+    }
   }
 
-  async updateStatus(id: string, status: OrderStatus) {
+  async updateStatus(
+    id: string,
+    status: OrderStatus,
+    authorization?: string,
+  ) {
     if (!Object.values(OrderStatus).includes(status)) {
       throw new BadRequestException('status invalido');
     }
@@ -371,18 +441,39 @@ export class OrdersService {
 
     const previousStatus = order.status;
     order.status = status;
-    await this.dataSource.getRepository(Order).save(order);
 
-    await this.eventPublisher.publish(
-      EVENT_TYPES.ORDER_STATUS_CHANGED,
-      {
-        orderId: order.id,
-        restaurantId: order.restaurantId,
-        status: order.status,
-        previousStatus,
-      },
-      'restaurant',
-    );
+    await this.dataSource.transaction(async (manager) => {
+      await manager.save(order);
+
+      await this.eventPublisher.publish(
+        EVENT_TYPES.ORDER_STATUS_CHANGED,
+        {
+          orderId: order.id,
+          restaurantId: order.restaurantId,
+          status: order.status,
+          previousStatus,
+        },
+        'restaurant',
+        manager,
+      );
+    });
+
+    if (
+      order.courierId &&
+      (status === OrderStatus.DELIVERED ||
+        status === OrderStatus.CANCELLED) &&
+      previousStatus === OrderStatus.OUT_FOR_DELIVERY
+    ) {
+      try {
+        await this.releaseCourier(order.courierId, order.id, authorization);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        this.logger.error(
+          `Pedido ${order.id} atualizado, mas falhou ao liberar o entregador ${order.courierId}: ${message}`,
+        );
+      }
+    }
 
     return order;
   }
@@ -412,11 +503,12 @@ export class OrdersService {
     user: AuthenticatedUser,
   ): Promise<void> {
     if (user.roles.includes(AUTH_ROLES.OWNER) && user.ownerId) {
-      const restaurant = await this.dataSource
-        .getRepository(Restaurant)
-        .findOne({ where: { id: order.restaurantId } });
-
-      if (restaurant?.ownerUserId === user.ownerId) {
+      if (
+        await this.restaurantAccess.isOwnedBy(
+          order.restaurantId,
+          user.ownerId,
+        )
+      ) {
         return;
       }
     }
@@ -438,23 +530,101 @@ export class OrdersService {
     throw new ForbiddenException('Pedido de outro usuario');
   }
 
-  private async assertOwnedRestaurant(
-    restaurantId: string,
-    ownerId: string,
-  ): Promise<Restaurant> {
-    const restaurant = await this.dataSource
-      .getRepository(Restaurant)
-      .findOne({ where: { id: restaurantId } });
+  private async reserveCourier(
+    courierId: string,
+    orderId: string,
+    authorization?: string,
+  ): Promise<void> {
+    const token = this.assertInternalAuthorization(authorization);
 
-    if (!restaurant) {
-      throw new NotFoundException('Restaurante nao encontrado');
+    const response = await this.callCourierService(
+      courierId,
+      'reserve',
+      orderId,
+      token,
+      'reservar entregador',
+    );
+
+    if (response.status === 409) {
+      throw new ConflictException('Entregador indisponivel');
     }
 
-    if (restaurant.ownerUserId !== ownerId) {
-      throw new ForbiddenException('Restaurante de outro owner');
+    if (!response.ok) {
+      throw new InternalServerErrorException(
+        `Erro ao reservar entregador: ${response.status}`,
+      );
+    }
+  }
+
+  private async releaseCourier(
+    courierId: string,
+    orderId: string,
+    authorization?: string,
+  ): Promise<void> {
+    if (!authorization) {
+      this.logger.warn(
+        `Sem token para liberar o entregador ${courierId} do pedido ${orderId}`,
+      );
+      return;
     }
 
-    return restaurant;
+    try {
+      const response = await this.callCourierService(
+        courierId,
+        'release',
+        orderId,
+        authorization,
+        'liberar entregador',
+      );
+
+      if (!response.ok) {
+        this.logger.warn(
+          `Falha ao liberar entregador ${courierId}: ${response.status}`,
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Falha ao liberar entregador ${courierId}: ${message}`,
+      );
+    }
+  }
+
+  private assertInternalAuthorization(authorization?: string): string {
+    if (!authorization) {
+      throw new ServiceUnavailableException(
+        'Token de servico ausente para reservar entregador',
+      );
+    }
+
+    return authorization;
+  }
+
+  private async callCourierService(
+    courierId: string,
+    action: 'reserve' | 'release',
+    orderId: string,
+    authorization: string,
+    operation: string,
+  ): Promise<Response> {
+    try {
+      return await fetch(
+        `${this.userServiceBaseUrl()}/courier/${encodeURIComponent(courierId)}/${action}`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization,
+          },
+          body: JSON.stringify({ orderId }),
+          signal: AbortSignal.timeout(5000),
+        },
+      );
+    } catch {
+      throw new ServiceUnavailableException(
+        `Nao foi possivel ${operation}`,
+      );
+    }
   }
 
   private async findNearestCourier(restaurantId: string): Promise<string> {
@@ -549,10 +719,8 @@ export class OrdersService {
   }
 
   private validateCreateOrder(dto: CreateOrderDto): void {
-    if (!dto.restaurantId || !dto.costumerUserId) {
-      throw new BadRequestException(
-        'restaurantId e costumerUserId sao obrigatorios',
-      );
+    if (!dto.restaurantId) {
+      throw new BadRequestException('restaurantId e obrigatorio');
     }
 
     if (!dto.paymentMethod) {

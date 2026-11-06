@@ -2,7 +2,6 @@ import {
   Body,
   Controller,
   Delete,
-  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -29,19 +28,14 @@ export class ProductsController {
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(AUTH_ROLES.OWNER)
-  async create(
+  create(
     @Body() createProductDto: CreateProductDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    if (!user.ownerId) {
-      throw new ForbiddenException('Owner sem vinculo');
-    }
-
-    await this.productsService.ensureOwnedByRestaurant(
-      createProductDto.restaurantId,
+    return this.productsService.createForOwner(
+      createProductDto,
       user.ownerId,
     );
-    return this.productsService.create(createProductDto);
   }
 
   @Get()
@@ -57,31 +51,25 @@ export class ProductsController {
   @Patch(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(AUTH_ROLES.OWNER)
-  async update(
+  update(
     @Param('id') id: string,
     @Body() updateProductDto: UpdateProductDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    await this.assertOwner(id, user);
-    return this.productsService.update(id, updateProductDto);
+    return this.productsService.updateForOwner(
+      id,
+      updateProductDto,
+      user.ownerId,
+    );
   }
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(AUTH_ROLES.OWNER)
-  async remove(
+  remove(
     @Param('id') id: string,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    await this.assertOwner(id, user);
-    return this.productsService.remove(id);
-  }
-
-  private async assertOwner(id: string, user: AuthenticatedUser) {
-    if (!user.ownerId) {
-      throw new ForbiddenException('Owner sem vinculo');
-    }
-
-    await this.productsService.ensureOwnedByProduct(id, user.ownerId);
+    return this.productsService.removeForOwner(id, user.ownerId);
   }
 }

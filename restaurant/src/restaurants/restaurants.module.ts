@@ -5,6 +5,7 @@ import { ElastiCacheModule, EventsModule } from '@restaurant/aws';
 import { RestaurantsService } from './restaurants.service';
 import { RestaurantsController } from './restaurants.controller';
 import { Restaurant } from './entities/restaurant.entity';
+import { RestaurantAccessModule } from './restaurant-access.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { Restaurant } from './entities/restaurant.entity';
     GeolocationModule,
     ElastiCacheModule,
     EventsModule,
+    RestaurantAccessModule,
   ],
   controllers: [RestaurantsController],
   providers: [RestaurantsService],

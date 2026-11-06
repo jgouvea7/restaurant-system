@@ -8,6 +8,8 @@ import { ProductsModule } from './products/products.module';
 import { OpeningHourModule } from './opening-hour/opening-hour.module';
 import { OrdersModule } from './orders/orders.module';
 import { GeolocationModule } from '@restaurant/geolocation';
+import { HealthModule } from './health/health.module';
+import { OutboxModule } from './outbox/outbox.module';
 
 @Module({
   imports: [
@@ -19,7 +21,9 @@ import { GeolocationModule } from '@restaurant/geolocation';
       password: process.env.DB_PASSWORD ?? "restaurant1234",
       database: process.env.DB_NAME ?? "restaurants",
       autoLoadEntities: true,
-      synchronize: true,
+      synchronize: process.env.DB_SYNCHRONIZE === 'true',
+      migrations: [__dirname + '/migrations/*{.ts,.js}'],
+      migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',
       retryAttempts: 30,
       retryDelay: 2000
     }),
@@ -28,7 +32,9 @@ import { GeolocationModule } from '@restaurant/geolocation';
     ProductsModule,
     OpeningHourModule,
     OrdersModule,
-    GeolocationModule],
+    GeolocationModule,
+    OutboxModule,
+    HealthModule],
   controllers: [AppController],
   providers: [AppService],
 })

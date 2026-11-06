@@ -19,6 +19,7 @@ import {
   EventPublisherService,
 } from '@restaurant/aws';
 import { RestaurantAddress } from '../restaurant-address/entities/restaurant-address.entity';
+import { RestaurantAccessService } from './restaurant-access.service';
 
 export interface FindNearbyRestaurantsInput {
   latitude: number;
@@ -38,10 +39,15 @@ export class RestaurantsService {
     private readonly geolocationService: GeolocationService,
     private readonly elastiCacheService: ElastiCacheService,
     private readonly eventPublisher: EventPublisherService,
+    private readonly restaurantAccess: RestaurantAccessService,
   ) {}
 
-  async create(dto: CreateRestaurantDto) {
-    await this.ensureOwnerExists(dto.ownerUserId);
+  async create(dto: CreateRestaurantDto, ownerId: string | null) {
+    if (!ownerId) {
+      throw new ForbiddenException('Owner sem vinculo');
+    }
+
+    await this.ensureOwnerExists(ownerId);
 
     const restaurantAddressData =
       await this.geolocationService.findAddressByCep(
@@ -71,7 +77,7 @@ export class RestaurantsService {
         slug: dto.slug,
         description: dto.description,
         phone: dto.phone,
-        ownerUserId: dto.ownerUserId,
+        ownerUserId: ownerId,
       });
 
       await manager.save(restaurant);
@@ -88,25 +94,27 @@ export class RestaurantsService {
       });
 
       await manager.save(addressRestaurant);
+
+      await this.eventPublisher.publish(
+        EVENT_TYPES.RESTAURANT_CREATED,
+        {
+          restaurantId: restaurant.id,
+          name: restaurant.name,
+          slug: restaurant.slug,
+          ownerUserId: restaurant.ownerUserId,
+          latitude: coordinates.latitude,
+          longitude: coordinates.longitude,
+        },
+        'restaurant',
+        manager,
+      );
+
       return { restaurant, addressRestaurant };
     });
 
     await this.indexRestaurantLocation(
       result.restaurant.id,
       result.addressRestaurant,
-    );
-
-    await this.eventPublisher.publish(
-      EVENT_TYPES.RESTAURANT_CREATED,
-      {
-        restaurantId: result.restaurant.id,
-        name: result.restaurant.name,
-        slug: result.restaurant.slug,
-        ownerUserId: result.restaurant.ownerUserId,
-        latitude: coordinates.latitude,
-        longitude: coordinates.longitude,
-      },
-      'restaurant',
     );
 
     return result;
@@ -230,22 +238,6 @@ export class RestaurantsService {
     return this.dataSource.getRepository(Restaurant).find();
   }
 
-  async ensureOwned(restaurantId: string, ownerId: string) {
-    const restaurant = await this.dataSource
-      .getRepository(Restaurant)
-      .findOne({ where: { id: restaurantId } });
-
-    if (!restaurant) {
-      throw new NotFoundException('Restaurante nao encontrado');
-    }
-
-    if (restaurant.ownerUserId !== ownerId) {
-      throw new ForbiddenException('Restaurante de outro owner');
-    }
-
-    return restaurant;
-  }
-
   findOwnerById(ownerId: string) {
     return this.dataSource.getRepository(Restaurant).find({
       where: { ownerUserId: ownerId },
@@ -262,8 +254,22 @@ export class RestaurantsService {
     });
   }
 
-  update(id: string, updateRestaurantDto: UpdateRestaurantDto) {
+  async updateForOwner(
+    id: string,
+    updateRestaurantDto: UpdateRestaurantDto,
+    ownerId: string | null,
+  ) {
+    await this.restaurantAccess.findByOwnerOrFail(id, ownerId);
+    return this.update(id, updateRestaurantDto);
+  }
+
+  private update(id: string, updateRestaurantDto: UpdateRestaurantDto) {
     return `This action updates a #${id} restaurant`;
+  }
+
+  async removeForOwner(id: string, ownerId: string | null) {
+    await this.restaurantAccess.findByOwnerOrFail(id, ownerId);
+    return this.remove(id);
   }
 
   async remove(id: string) {

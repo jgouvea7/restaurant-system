@@ -1,7 +1,6 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -21,6 +20,7 @@ import { CourierService } from './courier.service';
 import { CreateCourierDto } from './dto/create-courier.dto';
 import { UpdateCourierAvailabilityDto } from './dto/update-courier-availability.dto';
 import { UpdateCourierLocationDto } from './dto/update-courier-location.dto';
+import { ReserveCourierDto } from './dto/reserve-courier.dto';
 
 @Controller('courier')
 export class CourierController {
@@ -38,8 +38,35 @@ export class CourierController {
     @Param('id') courierId: string,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    this.assertSelf(courierId, user);
-    return this.courierService.updateCourierStatus(courierId);
+    return this.courierService.updateCourierStatus(courierId, user.courierId);
+  }
+
+  @Post(':id/reserve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.OWNER)
+  reserve(
+    @Param('id') courierId: string,
+    @Body() reserveCourierDto: ReserveCourierDto,
+  ) {
+    return this.courierService.reserveCourier(
+      courierId,
+      reserveCourierDto.orderId,
+    );
+  }
+
+  @Post(':id/release')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.OWNER, AUTH_ROLES.COURIER, AUTH_ROLES.COSTUMER)
+  release(
+    @Param('id') courierId: string,
+    @Body() reserveCourierDto: ReserveCourierDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.courierService.releaseCourier(
+      courierId,
+      reserveCourierDto.orderId,
+      user,
+    );
   }
 
   @Get('nearby')
@@ -75,11 +102,11 @@ export class CourierController {
     @Body() updateCourierLocationDto: UpdateCourierLocationDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    this.assertSelf(courierId, user);
     return this.courierService.updateLocation(
       courierId,
-      Number(updateCourierLocationDto.latitude),
-      Number(updateCourierLocationDto.longitude),
+      user.courierId,
+      updateCourierLocationDto.latitude,
+      updateCourierLocationDto.longitude,
     );
   }
 
@@ -91,9 +118,9 @@ export class CourierController {
     @Body() updateCourierAvailabilityDto: UpdateCourierAvailabilityDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    this.assertSelf(courierId, user);
     return this.courierService.setCourierAvailability(
       courierId,
+      user.courierId,
       updateCourierAvailabilityDto.available,
     );
   }
@@ -101,11 +128,5 @@ export class CourierController {
   @Get()
   findAll() {
     return this.courierService.getAllCourierUsers();
-  }
-
-  private assertSelf(courierId: string, user: AuthenticatedUser) {
-    if (!user.courierId || user.courierId !== courierId) {
-      throw new ForbiddenException('Entregador de outro usuario');
-    }
   }
 }

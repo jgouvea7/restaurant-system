@@ -1,8 +1,8 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
@@ -33,11 +33,7 @@ export class OrdersController {
     @Body() createOrderDto: CreateOrderDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    if (createOrderDto.costumerUserId !== user.userId) {
-      throw new ForbiddenException('Pedido deve ser criado pelo proprio cliente');
-    }
-
-    return this.ordersService.create(createOrderDto);
+    return this.ordersService.create(createOrderDto, user);
   }
 
   @Get()
@@ -63,11 +59,13 @@ export class OrdersController {
     @Param('id') id: string,
     @Body() updateOrderStatusDto: UpdateOrderStatusDto,
     @CurrentUser() user: AuthenticatedUser,
+    @Headers('authorization') authorization?: string,
   ) {
     return this.ordersService.updateStatusForUser(
       id,
       updateOrderStatusDto.status,
       user,
+      authorization,
     );
   }
 
@@ -77,15 +75,13 @@ export class OrdersController {
     @Param('id') id: string,
     @Body() assignCourierDto: AssignCourierDto,
     @CurrentUser() user: AuthenticatedUser,
+    @Headers('authorization') authorization?: string,
   ) {
-    if (!user.ownerId) {
-      throw new ForbiddenException('Owner sem vinculo');
-    }
-
     return this.ordersService.assignCourier(
       id,
-      user.ownerId,
+      user,
       assignCourierDto.courierId,
+      authorization,
     );
   }
 }

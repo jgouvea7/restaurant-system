@@ -1,8 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  Optional,
+} from '@nestjs/common';
 import { PublishCommand, SNSClient } from '@aws-sdk/client-sns';
 import {
   DomainEvent,
+  EVENT_OUTBOX_STORE,
+  EventOutboxStore,
   EventPayloads,
   EventType,
 } from './event.types';
@@ -13,7 +21,11 @@ export class EventPublisherService implements OnModuleDestroy {
   private readonly client: SNSClient;
   private readonly topicArn?: string;
 
-  constructor() {
+  constructor(
+    @Optional()
+    @Inject(EVENT_OUTBOX_STORE)
+    private readonly outbox?: EventOutboxStore,
+  ) {
     this.topicArn = process.env.SNS_TOPIC_ARN;
     this.client = new SNSClient(this.buildConfig());
   }
@@ -26,6 +38,7 @@ export class EventPublisherService implements OnModuleDestroy {
     type: T,
     data: EventPayloads[T],
     source = process.env.SERVICE_NAME ?? 'unknown',
+    manager?: unknown,
   ): Promise<string | null> {
     const event: DomainEvent<T> = {
       id: randomUUID(),
@@ -35,37 +48,42 @@ export class EventPublisherService implements OnModuleDestroy {
       data,
     };
 
-    if (!this.topicArn) {
-      this.logger.warn(
-        `SNS_TOPIC_ARN nao configurado; evento ${type} descartado`,
-      );
-      return null;
+    if (this.outbox) {
+      await this.outbox.save(event, manager);
+      return event.id;
     }
 
     try {
-      await this.client.send(
-        new PublishCommand({
-          TopicArn: this.topicArn,
-          Message: JSON.stringify(event),
-          MessageAttributes: {
-            eventType: {
-              DataType: 'String',
-              StringValue: type,
-            },
-            source: {
-              DataType: 'String',
-              StringValue: event.source,
-            },
-          },
-        }),
-      );
-
+      await this.deliver(event);
       return event.id;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Falha ao publicar evento ${type}: ${message}`);
       return null;
     }
+  }
+
+  async deliver(event: DomainEvent): Promise<void> {
+    if (!this.topicArn) {
+      throw new Error('SNS_TOPIC_ARN nao configurado');
+    }
+
+    await this.client.send(
+      new PublishCommand({
+        TopicArn: this.topicArn,
+        Message: JSON.stringify(event),
+        MessageAttributes: {
+          eventType: {
+            DataType: 'String',
+            StringValue: event.type,
+          },
+          source: {
+            DataType: 'String',
+            StringValue: event.source,
+          },
+        },
+      }),
+    );
   }
 
   private buildConfig() {

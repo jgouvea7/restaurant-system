@@ -330,7 +330,7 @@ resource "aws_lb_target_group" "user" {
 
   health_check {
     enabled             = true
-    path                = "/"
+    path                = "/health"
     protocol            = "HTTP"
     matcher             = "200"
     interval            = 30
@@ -421,7 +421,7 @@ resource "aws_lb_target_group" "restaurant" {
 
   health_check {
     enabled             = true
-    path                = "/"
+    path                = "/health"
     protocol            = "HTTP"
     matcher             = "200"
     interval            = 30
@@ -513,7 +513,7 @@ resource "aws_lb_target_group" "payment" {
 
   health_check {
     enabled             = true
-    path                = "/"
+    path                = "/health"
     protocol            = "HTTP"
     matcher             = "200"
     interval            = 30
@@ -604,7 +604,7 @@ resource "aws_lb_target_group" "auth" {
 
   health_check {
     enabled             = true
-    path                = "/"
+    path                = "/health"
     protocol            = "HTTP"
     matcher             = "200"
     interval            = 30
