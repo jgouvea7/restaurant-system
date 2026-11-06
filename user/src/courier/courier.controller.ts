@@ -14,6 +14,7 @@ import {
   JwtAuthGuard,
   Roles,
   RolesGuard,
+  ServiceAuthGuard,
 } from '@restaurant/geolocation';
 import type { AuthenticatedUser } from '@restaurant/geolocation';
 import { CourierService } from './courier.service';
@@ -42,8 +43,7 @@ export class CourierController {
   }
 
   @Post(':id/reserve')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(AUTH_ROLES.OWNER)
+  @UseGuards(ServiceAuthGuard)
   reserve(
     @Param('id') courierId: string,
     @Body() reserveCourierDto: ReserveCourierDto,
@@ -55,17 +55,45 @@ export class CourierController {
   }
 
   @Post(':id/release')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(AUTH_ROLES.OWNER, AUTH_ROLES.COURIER, AUTH_ROLES.COSTUMER)
+  @UseGuards(ServiceAuthGuard)
   release(
     @Param('id') courierId: string,
     @Body() reserveCourierDto: ReserveCourierDto,
-    @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.courierService.releaseCourier(
       courierId,
       reserveCourierDto.orderId,
-      user,
+    );
+  }
+
+  @Post(':id/accept')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.COURIER)
+  accept(
+    @Param('id') courierId: string,
+    @Body() reserveCourierDto: ReserveCourierDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.courierService.acceptAssignment(
+      courierId,
+      user.courierId,
+      reserveCourierDto.orderId,
+    );
+  }
+
+  @Post(':id/reject')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.COURIER)
+  reject(
+    @Param('id') courierId: string,
+    @Body() reserveCourierDto: ReserveCourierDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.courierService.rejectAssignment(
+      courierId,
+      user.courierId,
+      reserveCourierDto.orderId,
+      reserveCourierDto.reason,
     );
   }
 

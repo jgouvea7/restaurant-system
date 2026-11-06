@@ -240,14 +240,14 @@ Endpoints protegidos nesta fase:
 | `restaurant` | `PATCH /orders/:id/courier` | `owner` do restaurante; reserva o entregador e inicia a entrega |
 | `payment` | `GET /payments/:orderId` | qualquer usuário autenticado |
 | `user` | `PATCH /courier/:id/location`, `/availability` e `POST /courier/:id/available` | `courier` dono do id |
-| `user` | `POST /courier/:id/reserve` | `owner`; reserva o entregador para um pedido |
-| `user` | `POST /courier/:id/release` | `owner`/`costumer` autenticado ou o próprio `courier` |
+| `user` | `POST /courier/:id/accept` e `/reject` | `courier` dono do id; aceita ou recusa a reserva |
+| `user` | `POST /courier/:id/reserve` e `/release` | apenas chamadas serviço a serviço (HMAC) |
 
-As rotas de cadastro (`POST /costumer`, `/owner`, `/courier`), o cardápio público e a busca de restaurantes/entregadores próximos continuam abertos.
+As rotas de cadastro (`POST /costumer`, `/owner`, `/courier`), o cardápio público e a busca de restaurantes/entregadores próximos continuam abertos. `POST /users/authenticate` também exige assinatura de serviço e é usado somente pelo `auth`.
 
 ### Entregadores e pedidos
 
-Quando o pedido está em `ready`, o owner pode atribuir um entregador. Sem `courierId` no corpo, o `restaurant` busca o entregador disponível mais próximo do endereço do restaurante; com `courierId`, valida se ele existe e está disponível. A atribuição move o pedido para `out_for_delivery` e publica `order.courier.assigned`.
+Quando o pedido está em `ready`, o owner pode atribuir um entregador. Sem `courierId` no corpo, o `restaurant` busca o entregador disponível mais próximo do endereço do restaurante; com `courierId`, valida se ele existe e está disponível. A atribuição cria uma reserva `pending`, move o pedido para `out_for_delivery` e publica `order.courier.assigned` e `courier.assignment.offered`.
 
 ```bash
 curl -X PATCH http://localhost:8081/orders/ORDER_ID/courier \
@@ -262,7 +262,21 @@ curl -X PATCH http://localhost:8081/orders/ORDER_ID/courier \
   -d '{"courierId":"COURIER_ID"}'
 ```
 
-Depois disso, o entregador pode avançar o pedido para `delivered`:
+Depois disso, o entregador pode aceitar ou recusar a reserva:
+
+```bash
+curl -X POST http://localhost:8080/courier/COURIER_ID/accept \
+  -H "Authorization: Bearer COURIER_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"orderId":"ORDER_ID"}'
+
+curl -X POST http://localhost:8080/courier/COURIER_ID/reject \
+  -H "Authorization: Bearer COURIER_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"orderId":"ORDER_ID","reason":"sem tempo"}'
+```
+
+Depois do aceite, o entregador pode avançar o pedido para `delivered`:
 
 ```bash
 curl -X PATCH http://localhost:8081/orders/ORDER_ID/status \
@@ -311,12 +325,12 @@ O pacote `aws/events/` define o envelope `DomainEvent`, os tipos de evento e os 
 
 Os serviços `restaurant`, `payment` e `user` usam um **outbox persistente** (`outbox_events`). Criação de restaurante, criação de pedido e mudança de status gravam o estado e o evento na mesma transação; nos demais fluxos o evento é persistido de forma durável e o `OutboxRelayService` publica no SNS em background, com tentativas, backoff exponencial e recuperação de eventos travados em `processing`. Consumers registram `processed_events` por `(consumer, eventId)`, com lock e liberação em caso de falha, para evitar processamento duplicado.
 
-O Terraform provisiona duas filas com filtros por `eventType`:
+O Terraform provisiona duas filas com filtros por `eventType` e DLQs com `maxReceiveCount = 5`:
 
 | Fila | Eventos | Consumidor |
 | --- | --- | --- |
 | `payment-events` | `order.created` | `payment` |
-| `restaurant-events` | `payment.approved`, `payment.rejected` | `restaurant` |
+| `restaurant-events` | `payment.approved`, `payment.rejected`, `courier.assignment.rejected`, `courier.assignment.expired` | `restaurant` |
 
 Eventos publicados nesta fase:
 
@@ -329,6 +343,10 @@ Eventos publicados nesta fase:
 | `order.created` | `restaurant` |
 | `order.status.changed` | `restaurant` |
 | `order.courier.assigned` | `restaurant` |
+| `courier.assignment.offered` | `user` |
+| `courier.assignment.accepted` | `user` |
+| `courier.assignment.rejected` | `user` |
+| `courier.assignment.expired` | `user` |
 | `payment.approved` | `payment` |
 | `payment.rejected` | `payment` |
 
@@ -336,19 +354,21 @@ As variáveis `SNS_TOPIC_ARN` e `SQS_QUEUE_URL` configuram os clientes. O `resta
 
 ### Reserva de entregador
 
-A atribuição usa reserva explícita no `user`: `POST /courier/:id/reserve` marca o entregador como indisponível e grava `reservedForOrderId`; `POST /courier/:id/release` libera automaticamente o entregador quando o pedido vira `delivered` ou `cancelled`. As chamadas internas reutilizam o token do owner/entregador/cliente que originou a mudança.
+A atribuição usa reserva explícita no `user`: `POST /courier/:id/reserve` marca o entregador como indisponível, grava `reservedForOrderId` e inicia uma reserva `pending` com validade de `COURIER_RESERVATION_TTL_SECONDS` (padrão `120`). O entregador pode aceitar ou recusar; uma recusa, ou a expiração detectada pelo sweeper (`COURIER_RESERVATION_SWEEP_INTERVAL_MS`, padrão `30000`), publica um evento e o `restaurant` devolve o pedido para `ready`, limpando o entregador. `POST /courier/:id/release` é chamado pelo `restaurant` ao concluir ou cancelar a entrega.
+
+As chamadas internas (`auth` → `user`, `restaurant` → `user`, reserva/liberação) usam HMAC-SHA256 com os headers `x-service-name`, `x-service-timestamp` e `x-service-signature`, assinados com `SERVICE_AUTH_SECRET`. O timestamp tem tolerância de 60 segundos.
 
 ### Health, observabilidade e limites
 
-Cada serviço expõe `GET /health`, com verificação do PostgreSQL (e também do Redis em `restaurant` e `user`). O ALB usa `/health` como health check. As respostas incluem `x-request-id`, e cada requisição gera um log JSON com método, caminho, status e duração.
+Cada serviço expõe `GET /health`, com verificação do PostgreSQL (e também do Redis em `restaurant` e `user`). O ALB usa `/health` como health check. As respostas incluem `x-request-id`, e cada requisição gera um log JSON com método, caminho, status e duração. O `x-request-id` e o `traceparent` são propagados nas chamadas internas.
 
-O limitador em memória aplica `RATE_LIMIT_MAX_REQUESTS` (padrão `240`) por `RATE_LIMIT_WINDOW_MS` (padrão `60000`) por IP, ignorando `/health`.
+`GET /metrics` expõe métricas Prometheus simples (`http_requests_total`, `http_request_duration_ms`, uptime e heap). O rate limit usa Redis quando disponível (`RATE_LIMIT_REDIS_URL` ou `REDIS_HOST`/`REDIS_PORT`) e cai para memória local se o Redis falhar, aplicando `RATE_LIMIT_MAX_REQUESTS` (padrão `240`) por `RATE_LIMIT_WINDOW_MS` (padrão `60000`) por IP; `/health` e `/metrics` são ignorados.
 
 ### Migrações
 
 O schema deixou de usar `synchronize` por padrão. Cada serviço possui migrações versionadas em `src/migrations`, executadas no boot com `migrationsRun`. Para habilitar o modo antigo apenas em desenvolvimento, use `DB_SYNCHRONIZE=true`; para desabilitar a execução automática, use `DB_MIGRATIONS_RUN=false`.
 
-O relay do outbox pode ser ajustado por `OUTBOX_RELAY_ENABLED`, `OUTBOX_RELAY_INTERVAL_MS` e `OUTBOX_BATCH_SIZE`.
+O relay do outbox pode ser ajustado por `OUTBOX_RELAY_ENABLED`, `OUTBOX_RELAY_INTERVAL_MS` e `OUTBOX_BATCH_SIZE`. A limpeza de `outbox_events` publicados e `processed_events` concluídos roda no boot dos serviços que registram `EVENT_MAINTENANCE_STORE`, com retenção configurável por `OUTBOX_RETENTION_DAYS` e `PROCESSED_EVENTS_RETENTION_DAYS` (padrão `7`), intervalo `OUTBOX_CLEANUP_INTERVAL_MS` e execução imediata opcional com `OUTBOX_CLEANUP_ON_START=true`.
 
 ## Como executar
 
@@ -523,7 +543,7 @@ O Floci é um emulador, não a AWS real. Alguns pontos importantes:
 
 ## Próximos passos
 
-- Adicionar autenticação serviço a serviço nas chamadas internas.
-- Implementar aceite/recusa explícitos do entregador e expiração de reservas.
-- Adicionar limpeza/particionamento das tabelas de outbox e eventos processados.
-- Evoluir o rate limit em memória para um store distribuído no Redis.
+- Testar as migrações e o fluxo completo com Floci, PostgreSQL, SNS, SQS e Redis.
+- Adicionar tracing distribuído exportado para um backend (OpenTelemetry/Jaeger).
+- Tornar o outbox do `payment` e do `user` atômico com o estado de domínio.
+- Adicionar alertas e dashboards sobre as métricas Prometheus e as DLQs.

@@ -7,4 +7,5 @@ export * from './events/event-consumer.service';
 export * from './events/event-publisher.service';
 export * from './events/event.types';
 export * from './events/events.module';
+export * from './events/outbox-cleanup.service';
 export * from './events/outbox-relay.service';

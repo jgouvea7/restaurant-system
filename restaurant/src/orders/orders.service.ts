@@ -9,11 +9,8 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { DataSource, FindOptionsWhere, In } from 'typeorm';
-import {
-  EVENT_TYPES,
-  EventPublisherService,
-} from '@restaurant/aws';
-import { AUTH_ROLES } from '@restaurant/geolocation';
+import { EVENT_TYPES, EventPublisherService } from '@restaurant/aws';
+import { AUTH_ROLES, internalRequestHeaders } from '@restaurant/geolocation';
 import type { AuthenticatedUser } from '@restaurant/geolocation';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderItem } from './entities/order-item.entity';
@@ -218,11 +215,7 @@ export class OrdersService {
     throw new ForbiddenException('Permissao insuficiente');
   }
 
-  findAll(
-    restaurantId?: string,
-    costumerUserId?: string,
-    courierId?: string,
-  ) {
+  findAll(restaurantId?: string, costumerUserId?: string, courierId?: string) {
     const where: FindOptionsWhere<Order> = {};
 
     if (restaurantId) {
@@ -329,6 +322,8 @@ export class OrdersService {
       throw new ForbiddenException('Owner sem vinculo');
     }
 
+    void authorization;
+
     const order = await this.findOne(id);
     await this.restaurantAccess.findByOwnerOrFail(
       order.restaurantId,
@@ -349,11 +344,7 @@ export class OrdersService {
       ? await this.validateCourier(courierId.trim())
       : await this.findNearestCourier(order.restaurantId);
 
-    await this.reserveCourier(
-      selectedCourierId,
-      order.id,
-      authorization,
-    );
+    await this.reserveCourier(selectedCourierId, order.id);
 
     try {
       const updated = await this.dataSource.transaction(async (manager) => {
@@ -397,11 +388,7 @@ export class OrdersService {
       return updated;
     } catch (error) {
       try {
-        await this.releaseCourier(
-          selectedCourierId,
-          order.id,
-          authorization,
-        );
+        await this.releaseCourier(selectedCourierId, order.id);
       } catch (releaseError) {
         const message =
           releaseError instanceof Error
@@ -416,11 +403,9 @@ export class OrdersService {
     }
   }
 
-  async updateStatus(
-    id: string,
-    status: OrderStatus,
-    authorization?: string,
-  ) {
+  async updateStatus(id: string, status: OrderStatus, authorization?: string) {
+    void authorization;
+
     if (!Object.values(OrderStatus).includes(status)) {
       throw new BadRequestException('status invalido');
     }
@@ -460,15 +445,13 @@ export class OrdersService {
 
     if (
       order.courierId &&
-      (status === OrderStatus.DELIVERED ||
-        status === OrderStatus.CANCELLED) &&
+      (status === OrderStatus.DELIVERED || status === OrderStatus.CANCELLED) &&
       previousStatus === OrderStatus.OUT_FOR_DELIVERY
     ) {
       try {
-        await this.releaseCourier(order.courierId, order.id, authorization);
+        await this.releaseCourier(order.courierId, order.id);
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : String(error);
+        const message = error instanceof Error ? error.message : String(error);
         this.logger.error(
           `Pedido ${order.id} atualizado, mas falhou ao liberar o entregador ${order.courierId}: ${message}`,
         );
@@ -498,16 +481,60 @@ export class OrdersService {
     );
   }
 
+  async handleCourierAssignmentFailure(
+    orderId: string,
+    courierId: string | undefined,
+  ) {
+    const order = await this.dataSource
+      .getRepository(Order)
+      .findOne({ where: { id: orderId } });
+
+    if (!order) {
+      this.logger.warn(
+        `Pedido ${orderId} nao encontrado para falha de atribuicao`,
+      );
+      return null;
+    }
+
+    if (order.status !== OrderStatus.OUT_FOR_DELIVERY) {
+      return order;
+    }
+
+    if (courierId && order.courierId !== courierId) {
+      return order;
+    }
+
+    const previousStatus = order.status;
+    order.status = OrderStatus.READY;
+    order.courierId = null;
+    order.courierAssignedAt = null;
+
+    await this.dataSource.transaction(async (manager) => {
+      await manager.save(order);
+
+      await this.eventPublisher.publish(
+        EVENT_TYPES.ORDER_STATUS_CHANGED,
+        {
+          orderId: order.id,
+          restaurantId: order.restaurantId,
+          status: order.status,
+          previousStatus,
+        },
+        'restaurant',
+        manager,
+      );
+    });
+
+    return order;
+  }
+
   private async assertCanAccessOrder(
     order: Order,
     user: AuthenticatedUser,
   ): Promise<void> {
     if (user.roles.includes(AUTH_ROLES.OWNER) && user.ownerId) {
       if (
-        await this.restaurantAccess.isOwnedBy(
-          order.restaurantId,
-          user.ownerId,
-        )
+        await this.restaurantAccess.isOwnedBy(order.restaurantId, user.ownerId)
       ) {
         return;
       }
@@ -533,15 +560,11 @@ export class OrdersService {
   private async reserveCourier(
     courierId: string,
     orderId: string,
-    authorization?: string,
   ): Promise<void> {
-    const token = this.assertInternalAuthorization(authorization);
-
     const response = await this.callCourierService(
       courierId,
       'reserve',
       orderId,
-      token,
       'reservar entregador',
     );
 
@@ -559,21 +582,12 @@ export class OrdersService {
   private async releaseCourier(
     courierId: string,
     orderId: string,
-    authorization?: string,
   ): Promise<void> {
-    if (!authorization) {
-      this.logger.warn(
-        `Sem token para liberar o entregador ${courierId} do pedido ${orderId}`,
-      );
-      return;
-    }
-
     try {
       const response = await this.callCourierService(
         courierId,
         'release',
         orderId,
-        authorization,
         'liberar entregador',
       );
 
@@ -584,27 +598,14 @@ export class OrdersService {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(
-        `Falha ao liberar entregador ${courierId}: ${message}`,
-      );
+      this.logger.warn(`Falha ao liberar entregador ${courierId}: ${message}`);
     }
-  }
-
-  private assertInternalAuthorization(authorization?: string): string {
-    if (!authorization) {
-      throw new ServiceUnavailableException(
-        'Token de servico ausente para reservar entregador',
-      );
-    }
-
-    return authorization;
   }
 
   private async callCourierService(
     courierId: string,
     action: 'reserve' | 'release',
     orderId: string,
-    authorization: string,
     operation: string,
   ): Promise<Response> {
     try {
@@ -614,16 +615,14 @@ export class OrdersService {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            authorization,
+            ...internalRequestHeaders('restaurant'),
           },
           body: JSON.stringify({ orderId }),
           signal: AbortSignal.timeout(5000),
         },
       );
     } catch {
-      throw new ServiceUnavailableException(
-        `Nao foi possivel ${operation}`,
-      );
+      throw new ServiceUnavailableException(`Nao foi possivel ${operation}`);
     }
   }
 
@@ -650,7 +649,10 @@ export class OrdersService {
     let response: Response;
 
     try {
-      response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      response = await fetch(url, {
+        headers: internalRequestHeaders('restaurant'),
+        signal: AbortSignal.timeout(5000),
+      });
     } catch {
       throw new ServiceUnavailableException(
         'Nao foi possivel buscar entregadores',
@@ -678,7 +680,10 @@ export class OrdersService {
     try {
       response = await fetch(
         `${this.userServiceBaseUrl()}/courier/${encodeURIComponent(courierId)}`,
-        { signal: AbortSignal.timeout(5000) },
+        {
+          headers: internalRequestHeaders('restaurant'),
+          signal: AbortSignal.timeout(5000),
+        },
       );
     } catch {
       throw new ServiceUnavailableException(

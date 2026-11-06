@@ -9,10 +9,11 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { CreateCourierDto } from './dto/create-courier.dto';
-import { DataSource, In } from 'typeorm';
+import { DataSource, In, LessThanOrEqual } from 'typeorm';
 import { User, userStatus } from 'src/users/entities/user.entity';
 import {
   Courier,
+  CourierAssignmentStatus,
   CourierAvailability,
   VehicleType,
 } from './entities/courier.entity';
@@ -67,6 +68,8 @@ export class CourierService {
         available: CourierAvailability.UNAVAILABLE,
         reservedForOrderId: null,
         reservedAt: null,
+        reservationStatus: null,
+        reservationExpiresAt: null,
         user: user,
       });
 
@@ -138,6 +141,9 @@ export class CourierService {
     }
 
     const reservedAt = new Date();
+    const expiresAt = new Date(
+      reservedAt.getTime() + this.reservationTtlSeconds() * 1000,
+    );
     const result = await this.dataSource
       .getRepository(Courier)
       .createQueryBuilder()
@@ -146,6 +152,8 @@ export class CourierService {
         available: CourierAvailability.UNAVAILABLE,
         reservedForOrderId: orderId,
         reservedAt,
+        reservationStatus: CourierAssignmentStatus.PENDING,
+        reservationExpiresAt: expiresAt,
       })
       .where(
         'courierId = :courierId AND available = :available AND reservedForOrderId IS NULL',
@@ -166,13 +174,131 @@ export class CourierService {
       { courierId, available: false },
       'user',
     );
+    await this.eventPublisher.publish(
+      EVENT_TYPES.COURIER_ASSIGNMENT_OFFERED,
+      { courierId, orderId, expiresAt: expiresAt.toISOString() },
+      'user',
+    );
 
     return {
       courierId,
       orderId,
       available: CourierAvailability.UNAVAILABLE,
       reservedAt: reservedAt.toISOString(),
+      reservationStatus: CourierAssignmentStatus.PENDING,
+      expiresAt: expiresAt.toISOString(),
     };
+  }
+
+  async acceptAssignment(
+    courierId: string,
+    requesterCourierId: string | null,
+    orderId: string,
+  ) {
+    this.assertSameCourier(courierId, requesterCourierId);
+
+    if (!orderId) {
+      throw new BadRequestException('orderId e obrigatorio');
+    }
+
+    const courier = await this.findCourier(courierId);
+
+    if (courier.reservedForOrderId !== orderId) {
+      throw new ConflictException('Entregador nao reservado para este pedido');
+    }
+
+    if (courier.reservationStatus === CourierAssignmentStatus.ACCEPTED) {
+      return this.reservationResult(courier, orderId);
+    }
+
+    if (
+      courier.reservationExpiresAt &&
+      courier.reservationExpiresAt.getTime() <= Date.now()
+    ) {
+      await this.releaseExpiredReservation(courier);
+      throw new ConflictException('Reserva expirada');
+    }
+
+    courier.reservationStatus = CourierAssignmentStatus.ACCEPTED;
+    courier.reservationExpiresAt = null;
+    await this.dataSource.getRepository(Courier).save(courier);
+
+    const acceptedAt = new Date();
+    await this.eventPublisher.publish(
+      EVENT_TYPES.COURIER_ASSIGNMENT_ACCEPTED,
+      { courierId, orderId, acceptedAt: acceptedAt.toISOString() },
+      'user',
+    );
+
+    return {
+      courierId,
+      orderId,
+      reservationStatus: CourierAssignmentStatus.ACCEPTED,
+      acceptedAt: acceptedAt.toISOString(),
+    };
+  }
+
+  async rejectAssignment(
+    courierId: string,
+    requesterCourierId: string | null,
+    orderId: string,
+    reason?: string,
+  ) {
+    this.assertSameCourier(courierId, requesterCourierId);
+
+    if (!orderId) {
+      throw new BadRequestException('orderId e obrigatorio');
+    }
+
+    const courier = await this.findCourier(courierId);
+
+    if (!courier.reservedForOrderId) {
+      return { courierId, orderId, released: false };
+    }
+
+    if (courier.reservedForOrderId !== orderId) {
+      throw new ConflictException('Entregador reservado para outro pedido');
+    }
+
+    await this.releaseReservation(courier);
+    await this.eventPublisher.publish(
+      EVENT_TYPES.COURIER_ASSIGNMENT_REJECTED,
+      { courierId, orderId, reason: reason ?? null },
+      'user',
+    );
+
+    return {
+      courierId,
+      orderId,
+      released: true,
+      reservationStatus: CourierAssignmentStatus.REJECTED,
+    };
+  }
+
+  async releaseExpiredReservations(now = new Date()): Promise<number> {
+    const expired = await this.dataSource.getRepository(Courier).find({
+      where: {
+        reservationStatus: CourierAssignmentStatus.PENDING,
+        reservationExpiresAt: LessThanOrEqual(now),
+      },
+    });
+
+    let released = 0;
+
+    for (const courier of expired) {
+      if (!courier.reservedForOrderId) {
+        continue;
+      }
+
+      const orderId = courier.reservedForOrderId;
+      await this.releaseExpiredReservation(courier);
+      released += 1;
+      this.logger.warn(
+        `Reserva expirada do entregador ${courier.courierId} para o pedido ${orderId}`,
+      );
+    }
+
+    return released;
   }
 
   async releaseCourier(
@@ -194,13 +320,8 @@ export class CourierService {
 
     const courier = await this.findCourier(courierId);
 
-    if (
-      courier.reservedForOrderId &&
-      courier.reservedForOrderId !== orderId
-    ) {
-      throw new ConflictException(
-        'Entregador reservado para outro pedido',
-      );
+    if (courier.reservedForOrderId && courier.reservedForOrderId !== orderId) {
+      throw new ConflictException('Entregador reservado para outro pedido');
     }
 
     if (!courier.reservedForOrderId) {
@@ -214,6 +335,8 @@ export class CourierService {
 
     courier.reservedForOrderId = null;
     courier.reservedAt = null;
+    courier.reservationStatus = null;
+    courier.reservationExpiresAt = null;
     const released = await this.applyAvailability(courier, true);
 
     return {
@@ -236,11 +359,14 @@ export class CourierService {
     this.validateCoordinates(latitude, longitude);
 
     try {
-      await this.elastiCacheService.addLocation(ELASTIC_CACHE_KEYS.COURIERS_GEO, {
-        member: courierId,
-        latitude,
-        longitude,
-      });
+      await this.elastiCacheService.addLocation(
+        ELASTIC_CACHE_KEYS.COURIERS_GEO,
+        {
+          member: courierId,
+          latitude,
+          longitude,
+        },
+      );
 
       if (courier.available === CourierAvailability.AVAILABLE) {
         await this.elastiCacheService.addToSet(
@@ -433,7 +559,48 @@ export class CourierService {
       orderId,
       available: courier.available,
       reservedAt: courier.reservedAt?.toISOString() ?? null,
+      reservationStatus: courier.reservationStatus,
+      expiresAt: courier.reservationExpiresAt?.toISOString() ?? null,
     };
+  }
+
+  private async releaseReservation(courier: Courier): Promise<void> {
+    courier.reservedForOrderId = null;
+    courier.reservedAt = null;
+    courier.reservationStatus = null;
+    courier.reservationExpiresAt = null;
+
+    await this.applyAvailability(courier, true);
+  }
+
+  private async releaseExpiredReservation(courier: Courier): Promise<void> {
+    if (!courier.reservedForOrderId) {
+      return;
+    }
+
+    const orderId = courier.reservedForOrderId;
+    const expiredAt = new Date();
+
+    await this.releaseReservation(courier);
+    await this.eventPublisher.publish(
+      EVENT_TYPES.COURIER_ASSIGNMENT_EXPIRED,
+      {
+        courierId: courier.courierId,
+        orderId,
+        expiredAt: expiredAt.toISOString(),
+      },
+      'user',
+    );
+  }
+
+  private reservationTtlSeconds(): number {
+    const configured = Number(
+      process.env.COURIER_RESERVATION_TTL_SECONDS ?? 120,
+    );
+
+    return Number.isFinite(configured) && configured > 0
+      ? Math.trunc(configured)
+      : 120;
   }
 
   private async removeFromAvailableSet(courierId: string): Promise<void> {
@@ -455,9 +622,7 @@ export class CourierService {
     available: boolean,
   ): Promise<Courier> {
     if (available && courier.reservedForOrderId) {
-      throw new BadRequestException(
-        'Entregador reservado para um pedido',
-      );
+      throw new BadRequestException('Entregador reservado para um pedido');
     }
 
     courier.available = available
