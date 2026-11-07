@@ -1,7 +1,24 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  AUTH_ROLES,
+  CurrentUser,
+  JwtAuthGuard,
+  Roles,
+  RolesGuard,
+} from '@restaurant/geolocation';
+import type { AuthenticatedUser } from '@restaurant/geolocation';
 import { OwnerService } from './owner.service';
 import { CreateOwnerDto } from './dto/create-owner.dto';
-import { UpdateOwnerDto } from './dto/update-owner.dto';
 
 @Controller('owner')
 export class OwnerController {
@@ -13,13 +30,23 @@ export class OwnerController {
   }
 
   @Get()
-  findAll() {
-    return this.ownerService.findAll();
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.OWNER)
+  findAll(@Query('limit') limit?: string, @Query('cursor') cursor?: string) {
+    return this.ownerService.findAll(limit, cursor);
   }
 
-  @Get(":id")
-  findOwner(@Param("id") ownerId: string) {
-    return this.ownerService.findOwnerById(ownerId)
-  }
+  @Get(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.OWNER)
+  findOwner(
+    @Param('id', ParseUUIDPipe) ownerId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    if (user.ownerId !== ownerId) {
+      throw new ForbiddenException('Owner de outro usuario');
+    }
 
+    return this.ownerService.findOwnerById(ownerId);
+  }
 }

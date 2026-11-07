@@ -154,7 +154,9 @@ export class CourierController {
   }
 
   @Get()
-  findAll() {
-    return this.courierService.getAllCourierUsers();
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.OWNER)
+  findAll(@Query('limit') limit?: string, @Query('cursor') cursor?: string) {
+    return this.courierService.getAllCourierUsers(limit, cursor);
   }
 }

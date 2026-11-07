@@ -36,8 +36,8 @@ export class RestaurantsController {
   }
 
   @Get()
-  findAll() {
-    return this.restaurantsService.findAll();
+  findAll(@Query('limit') limit?: string, @Query('cursor') cursor?: string) {
+    return this.restaurantsService.findAll(limit, cursor);
   }
 
   @Get('nearby')
@@ -56,8 +56,8 @@ export class RestaurantsController {
   }
 
   @Get(':id/owner')
-  findOwner(@Param("id") ownerId: string) {
-    return this.restaurantsService.findOwnerById(ownerId)
+  findOwner(@Param('id') ownerId: string) {
+    return this.restaurantsService.findOwnerById(ownerId);
   }
 
   @Get(':id')
@@ -83,10 +83,7 @@ export class RestaurantsController {
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(AUTH_ROLES.OWNER)
-  remove(
-    @Param('id') id: string,
-    @CurrentUser() user: AuthenticatedUser,
-  ) {
+  remove(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.restaurantsService.removeForOwner(id, user.ownerId);
   }
 }

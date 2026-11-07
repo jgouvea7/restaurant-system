@@ -24,6 +24,7 @@ ENV NODE_ENV=production \
     REDIS_PORT=16379 \
     SERVICE_NAME=restaurant \
     SERVICE_AUTH_SECRET=restaurant-dev-service-secret-change-me \
+    TRUST_PROXY=1 \
     JWT_ACCESS_TOKEN_SECRET=restaurant-dev-access-secret-change-me \
     OUTBOX_RETENTION_DAYS=7 \
     PROCESSED_EVENTS_RETENTION_DAYS=7 \

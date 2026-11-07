@@ -40,12 +40,16 @@ export class OrdersController {
   findAll(
     @Query('restaurantId') restaurantId: string | undefined,
     @Query('costumerUserId') costumerUserId: string | undefined,
+    @Query('limit') limit: string | undefined,
+    @Query('cursor') cursor: string | undefined,
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.ordersService.findAllForUser(
       restaurantId,
       costumerUserId,
       user,
+      limit,
+      cursor,
     );
   }
 

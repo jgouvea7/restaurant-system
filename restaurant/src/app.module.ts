@@ -1,5 +1,9 @@
 import { Module } from '@nestjs/common';
-import { ObservabilityModule } from '@restaurant/geolocation';
+import {
+  isProduction,
+  ObservabilityModule,
+  requiredEnv,
+} from '@restaurant/geolocation';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -18,11 +22,11 @@ import { OutboxModule } from './outbox/outbox.module';
       type: 'postgres',
       host: process.env.DB_HOST ?? 'localhost',
       port: Number(process.env.DB_PORT ?? 17002),
-      username: process.env.DB_USER ?? 'restaurant',
-      password: process.env.DB_PASSWORD ?? 'restaurant1234',
-      database: process.env.DB_NAME ?? 'restaurants',
+      username: requiredEnv('DB_USER', 'restaurant'),
+      password: requiredEnv('DB_PASSWORD', 'restaurant1234'),
+      database: requiredEnv('DB_NAME', 'restaurants'),
       autoLoadEntities: true,
-      synchronize: process.env.DB_SYNCHRONIZE === 'true',
+      synchronize: !isProduction() && process.env.DB_SYNCHRONIZE === 'true',
       migrations: [__dirname + '/migrations/*{.ts,.js}'],
       migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',
       retryAttempts: 30,

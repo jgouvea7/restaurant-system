@@ -18,6 +18,12 @@ import {
   EVENT_TYPES,
   EventPublisherService,
 } from '@restaurant/aws';
+import {
+  buildPage,
+  decodeCursor,
+  resolvePageLimit,
+  type CursorPage,
+} from '@restaurant/geolocation';
 import { RestaurantAddress } from '../restaurant-address/entities/restaurant-address.entity';
 import { RestaurantAccessService } from './restaurant-access.service';
 
@@ -234,8 +240,40 @@ export class RestaurantsService {
     });
   }
 
-  findAll() {
-    return this.dataSource.getRepository(Restaurant).find();
+  async findAll(
+    limitValue?: string | number,
+    cursorValue?: string,
+  ): Promise<CursorPage<Restaurant>> {
+    const limit = resolvePageLimit(limitValue);
+    const cursor = decodeCursor(cursorValue);
+
+    if (cursorValue && !cursor) {
+      throw new BadRequestException('cursor invalido');
+    }
+
+    const query = this.dataSource
+      .getRepository(Restaurant)
+      .createQueryBuilder('restaurant')
+      .orderBy('restaurant.createdAt', 'DESC')
+      .addOrderBy('restaurant.id', 'DESC')
+      .take(limit + 1);
+
+    if (cursor) {
+      query.andWhere(
+        '(restaurant.createdAt, restaurant.id) < (:createdAt, :id)',
+        {
+          createdAt: cursor.createdAt,
+          id: cursor.id,
+        },
+      );
+    }
+
+    const rows = await query.getMany();
+
+    return buildPage(rows, limit, (restaurant) => ({
+      createdAt: restaurant.createdAt,
+      id: restaurant.id,
+    }));
   }
 
   findOwnerById(ownerId: string) {
@@ -244,13 +282,13 @@ export class RestaurantsService {
       select: {
         id: true,
         name: true,
-      }
-    })
+      },
+    });
   }
 
   findOne(restaurantId: string) {
     return this.dataSource.getRepository(Restaurant).find({
-      where : { id: restaurantId }
+      where: { id: restaurantId },
     });
   }
 
@@ -264,6 +302,10 @@ export class RestaurantsService {
   }
 
   private update(id: string, updateRestaurantDto: UpdateRestaurantDto) {
+    const fields = Object.keys(updateRestaurantDto);
+    this.logger.debug(
+      `Update requested for restaurant ${id}: ${fields.join(', ')}`,
+    );
     return `This action updates a #${id} restaurant`;
   }
 
