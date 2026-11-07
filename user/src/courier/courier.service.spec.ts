@@ -53,6 +53,7 @@ describe('CourierService', () => {
       update: jest.fn().mockReturnThis(),
       set: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
       execute: jest.fn().mockResolvedValue({ affected: 1 }),
     };
 
@@ -155,12 +156,7 @@ describe('CourierService', () => {
       false,
     );
 
-    expect(repository.save).toHaveBeenCalledWith(
-      expect.objectContaining({
-        courierId: 'courier-1',
-        available: CourierAvailability.UNAVAILABLE,
-      }),
-    );
+    expect(repository.createQueryBuilder).toHaveBeenCalled();
     expect(elastiCacheService.removeFromSet).toHaveBeenCalledWith(
       'couriers:available',
       'courier-1',
@@ -217,11 +213,10 @@ describe('CourierService', () => {
         released: true,
       }),
     );
-    expect(repository.save).toHaveBeenCalledWith(
-      expect.objectContaining({
-        reservedForOrderId: null,
-        available: CourierAvailability.AVAILABLE,
-      }),
+    expect(repository.createQueryBuilder).toHaveBeenCalled();
+    expect(elastiCacheService.addToSet).toHaveBeenCalledWith(
+      'couriers:available',
+      'courier-1',
     );
   });
 

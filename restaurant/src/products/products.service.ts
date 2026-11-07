@@ -5,6 +5,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import {
+  buildPage,
+  decodeCursor,
+  resolvePageLimit,
+  type CursorPage,
+} from '@restaurant/geolocation';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { Product } from './entities/product.entity';
@@ -84,11 +90,42 @@ export class ProductsService {
     return this.dataSource.getRepository(Product).save(product);
   }
 
-  findAll(restaurantId?: string) {
-    return this.dataSource.getRepository(Product).find({
-      where: restaurantId ? { restaurant: { id: restaurantId } } : {},
-      order: { createdAt: 'DESC' },
-    });
+  async findAll(
+    restaurantId?: string,
+    limitValue?: string | number,
+    cursorValue?: string,
+  ): Promise<CursorPage<Product>> {
+    const limit = resolvePageLimit(limitValue);
+    const cursor = decodeCursor(cursorValue);
+
+    if (cursorValue && !cursor) {
+      throw new BadRequestException('cursor invalido');
+    }
+
+    const query = this.dataSource
+      .getRepository(Product)
+      .createQueryBuilder('product')
+      .orderBy('product.createdAt', 'DESC')
+      .addOrderBy('product.id', 'DESC')
+      .take(limit + 1);
+
+    if (restaurantId) {
+      query.andWhere('product.restaurantId = :restaurantId', { restaurantId });
+    }
+
+    if (cursor) {
+      query.andWhere('(product.createdAt, product.id) < (:createdAt, :id)', {
+        createdAt: cursor.createdAt,
+        id: cursor.id,
+      });
+    }
+
+    const rows = await query.getMany();
+
+    return buildPage(rows, limit, (product) => ({
+      createdAt: product.createdAt,
+      id: product.id,
+    }));
   }
 
   async findOne(id: string) {

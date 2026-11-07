@@ -1,3 +1,5 @@
+import { isProduction } from '../config/env';
+
 export const AUTH_ROLES = {
   OWNER: 'owner',
   COURIER: 'courier',
@@ -34,9 +36,25 @@ export const AUTH_JWT = {
   audience: 'restaurant-services',
   algorithm: 'HS256' as const,
   secretEnv: 'JWT_ACCESS_TOKEN_SECRET',
-  defaultSecret: 'restaurant-dev-access-secret-change-me',
+  localDevelopmentSecret: 'restaurant-dev-access-secret-change-me',
 } as const;
 
 export function getAccessTokenSecret(): string {
-  return process.env[AUTH_JWT.secretEnv] ?? AUTH_JWT.defaultSecret;
+  const value = process.env[AUTH_JWT.secretEnv]?.trim();
+
+  if (value) {
+    return value;
+  }
+
+  if (isProduction()) {
+    throw new Error(
+      `${AUTH_JWT.secretEnv} e obrigatorio em producao; defina um segredo forte e exclusivo por ambiente`,
+    );
+  }
+
+  return AUTH_JWT.localDevelopmentSecret;
+}
+
+export function assertAuthConfiguration(): void {
+  getAccessTokenSecret();
 }

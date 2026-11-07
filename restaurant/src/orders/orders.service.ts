@@ -8,9 +8,17 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { DataSource, FindOptionsWhere, In } from 'typeorm';
+import { DataSource, In } from 'typeorm';
 import { EVENT_TYPES, EventPublisherService } from '@restaurant/aws';
-import { AUTH_ROLES, internalRequestHeaders } from '@restaurant/geolocation';
+import {
+  AUTH_ROLES,
+  buildPage,
+  decodeCursor,
+  emptyPage,
+  internalRequestHeaders,
+  resolvePageLimit,
+  type CursorPage,
+} from '@restaurant/geolocation';
 import type { AuthenticatedUser } from '@restaurant/geolocation';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderItem } from './entities/order-item.entity';
@@ -165,7 +173,9 @@ export class OrdersService {
     restaurantId: string | undefined,
     costumerUserId: string | undefined,
     user: AuthenticatedUser,
-  ) {
+    limitValue?: string | number,
+    cursorValue?: string,
+  ): Promise<CursorPage<Order>> {
     if (user.roles.includes(AUTH_ROLES.OWNER)) {
       if (!user.ownerId) {
         throw new ForbiddenException('Owner sem vinculo');
@@ -176,7 +186,11 @@ export class OrdersService {
           restaurantId,
           user.ownerId,
         );
-        return this.findAll(restaurantId, costumerUserId);
+        return this.findPage(
+          { restaurantId, costumerUserId },
+          limitValue,
+          cursorValue,
+        );
       }
 
       const restaurantIds = await this.restaurantAccess.listIdsByOwner(
@@ -184,16 +198,14 @@ export class OrdersService {
       );
 
       if (restaurantIds.length === 0) {
-        return [];
+        return emptyPage();
       }
 
-      return this.dataSource.getRepository(Order).find({
-        where: {
-          restaurantId: In(restaurantIds),
-          ...(costumerUserId ? { costumerUserId } : {}),
-        },
-        order: { createdAt: 'DESC' },
-      });
+      return this.findPage(
+        { restaurantIds, costumerUserId },
+        limitValue,
+        cursorValue,
+      );
     }
 
     if (user.roles.includes(AUTH_ROLES.COSTUMER)) {
@@ -201,7 +213,11 @@ export class OrdersService {
         throw new ForbiddenException('Pedido de outro cliente');
       }
 
-      return this.findAll(restaurantId, user.userId);
+      return this.findPage(
+        { restaurantId, costumerUserId: user.userId },
+        limitValue,
+        cursorValue,
+      );
     }
 
     if (user.roles.includes(AUTH_ROLES.COURIER)) {
@@ -209,31 +225,82 @@ export class OrdersService {
         throw new ForbiddenException('Entregador sem vinculo');
       }
 
-      return this.findAll(restaurantId, costumerUserId, user.courierId);
+      return this.findPage(
+        { restaurantId, costumerUserId, courierId: user.courierId },
+        limitValue,
+        cursorValue,
+      );
     }
 
     throw new ForbiddenException('Permissao insuficiente');
   }
 
-  findAll(restaurantId?: string, costumerUserId?: string, courierId?: string) {
-    const where: FindOptionsWhere<Order> = {};
+  private async findPage(
+    filters: {
+      restaurantId?: string;
+      restaurantIds?: string[];
+      costumerUserId?: string;
+      courierId?: string;
+    },
+    limitValue?: string | number,
+    cursorValue?: string,
+  ): Promise<CursorPage<Order>> {
+    const limit = resolvePageLimit(limitValue);
+    const cursor = decodeCursor(cursorValue);
 
-    if (restaurantId) {
-      where.restaurantId = restaurantId;
+    if (cursorValue && !cursor) {
+      throw new BadRequestException('cursor invalido');
     }
 
-    if (costumerUserId) {
-      where.costumerUserId = costumerUserId;
+    const query = this.dataSource
+      .getRepository(Order)
+      .createQueryBuilder('order')
+      .orderBy('order.createdAt', 'DESC')
+      .addOrderBy('order.id', 'DESC')
+      .take(limit + 1);
+
+    if (filters.restaurantId) {
+      query.andWhere('order.restaurantId = :restaurantId', {
+        restaurantId: filters.restaurantId,
+      });
+    } else if (filters.restaurantIds) {
+      if (filters.restaurantIds.length === 0) {
+        return emptyPage();
+      }
+
+      query.andWhere('order.restaurantId IN (:...restaurantIds)', {
+        restaurantIds: filters.restaurantIds,
+      });
     }
 
-    if (courierId) {
-      where.courierId = courierId;
+    if (filters.costumerUserId) {
+      query.andWhere('order.costumerUserId = :costumerUserId', {
+        costumerUserId: filters.costumerUserId,
+      });
     }
 
-    return this.dataSource.getRepository(Order).find({
-      where,
-      order: { createdAt: 'DESC' },
-    });
+    if (filters.courierId) {
+      query.andWhere('order.courierId = :courierId', {
+        courierId: filters.courierId,
+      });
+    }
+
+    if (cursor) {
+      query.andWhere('(order.createdAt, order.id) < (:createdAt, :id)', {
+        createdAt: cursor.createdAt,
+        id: cursor.id,
+      });
+    }
+
+    const orders = await query.getMany();
+    const page = buildPage(orders, limit, (order) => ({
+      createdAt: order.createdAt,
+      id: order.id,
+    }));
+
+    await this.attachItems(page.items);
+
+    return page;
   }
 
   async findOne(id: string) {
@@ -245,7 +312,31 @@ export class OrdersService {
       throw new NotFoundException('Pedido nao encontrado');
     }
 
+    await this.attachItems([order]);
+
     return order;
+  }
+
+  private async attachItems(orders: Order[]): Promise<void> {
+    if (orders.length === 0) {
+      return;
+    }
+
+    const items = await this.dataSource.getRepository(OrderItem).find({
+      where: { orderId: In(orders.map((order) => order.id)) },
+      order: { id: 'ASC' },
+    });
+    const itemsByOrder = new Map<string, OrderItem[]>();
+
+    for (const item of items) {
+      const current = itemsByOrder.get(item.orderId) ?? [];
+      current.push(item);
+      itemsByOrder.set(item.orderId, current);
+    }
+
+    for (const order of orders) {
+      order.items = itemsByOrder.get(order.id) ?? [];
+    }
   }
 
   async findOneForUser(id: string, user: AuthenticatedUser) {
@@ -347,22 +438,35 @@ export class OrdersService {
     await this.reserveCourier(selectedCourierId, order.id);
 
     try {
+      const assignedAt = new Date();
       const updated = await this.dataSource.transaction(async (manager) => {
         const previousStatus = order.status;
-        const assignedAt = new Date();
+        const result = await manager
+          .getRepository(Order)
+          .createQueryBuilder()
+          .update(Order)
+          .set({
+            courierId: selectedCourierId,
+            courierAssignedAt: assignedAt,
+            status: OrderStatus.OUT_FOR_DELIVERY,
+            updatedAt: assignedAt,
+          })
+          .where('id = :id AND status = :status AND courierId IS NULL', {
+            id,
+            status: OrderStatus.READY,
+          })
+          .execute();
 
-        order.courierId = selectedCourierId;
-        order.courierAssignedAt = assignedAt;
-        order.status = OrderStatus.OUT_FOR_DELIVERY;
-
-        const saved = await manager.save(order);
+        if (!result.affected) {
+          return null;
+        }
 
         await this.eventPublisher.publish(
           EVENT_TYPES.ORDER_STATUS_CHANGED,
           {
-            orderId: saved.id,
-            restaurantId: saved.restaurantId,
-            status: saved.status,
+            orderId: order.id,
+            restaurantId: order.restaurantId,
+            status: OrderStatus.OUT_FOR_DELIVERY,
             previousStatus,
           },
           'restaurant',
@@ -372,18 +476,37 @@ export class OrdersService {
         await this.eventPublisher.publish(
           EVENT_TYPES.ORDER_COURIER_ASSIGNED,
           {
-            orderId: saved.id,
-            restaurantId: saved.restaurantId,
+            orderId: order.id,
+            restaurantId: order.restaurantId,
             courierId: selectedCourierId,
-            status: saved.status,
+            status: OrderStatus.OUT_FOR_DELIVERY,
             assignedAt: assignedAt.toISOString(),
           },
           'restaurant',
           manager,
         );
 
-        return saved;
+        return {
+          ...order,
+          courierId: selectedCourierId,
+          courierAssignedAt: assignedAt,
+          status: OrderStatus.OUT_FOR_DELIVERY,
+          updatedAt: assignedAt,
+        };
       });
+
+      if (!updated) {
+        const latest = await this.findOne(id);
+
+        if (
+          latest.status === OrderStatus.OUT_FOR_DELIVERY &&
+          latest.courierId === selectedCourierId
+        ) {
+          return latest;
+        }
+
+        throw new ConflictException('Pedido foi atualizado por outra operacao');
+      }
 
       return updated;
     } catch (error) {
@@ -404,8 +527,6 @@ export class OrdersService {
   }
 
   async updateStatus(id: string, status: OrderStatus, authorization?: string) {
-    void authorization;
-
     if (!Object.values(OrderStatus).includes(status)) {
       throw new BadRequestException('status invalido');
     }
@@ -425,23 +546,51 @@ export class OrdersService {
     }
 
     const previousStatus = order.status;
-    order.status = status;
+    const updatedAt = new Date();
 
-    await this.dataSource.transaction(async (manager) => {
-      await manager.save(order);
+    const transitioned = await this.dataSource.transaction(async (manager) => {
+      const result = await manager
+        .getRepository(Order)
+        .createQueryBuilder()
+        .update(Order)
+        .set({ status, updatedAt })
+        .where('id = :id AND status = :previousStatus', {
+          id,
+          previousStatus,
+        })
+        .execute();
+
+      if (!result.affected) {
+        return false;
+      }
 
       await this.eventPublisher.publish(
         EVENT_TYPES.ORDER_STATUS_CHANGED,
         {
           orderId: order.id,
           restaurantId: order.restaurantId,
-          status: order.status,
+          status,
           previousStatus,
         },
         'restaurant',
         manager,
       );
+
+      return true;
     });
+
+    if (!transitioned) {
+      const latest = await this.findOne(id);
+
+      if (latest.status === status) {
+        return latest;
+      }
+
+      throw new ConflictException('Pedido foi atualizado por outra operacao');
+    }
+
+    order.status = status;
+    order.updatedAt = updatedAt;
 
     if (
       order.courierId &&

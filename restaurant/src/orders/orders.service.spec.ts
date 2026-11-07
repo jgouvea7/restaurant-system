@@ -4,7 +4,7 @@ import { EventPublisherService } from '@restaurant/aws';
 import type { AuthenticatedUser } from '@restaurant/geolocation';
 import { OrdersService } from './orders.service';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
-import { Order, OrderStatus } from './entities/order.entity';
+import { OrderStatus } from './entities/order.entity';
 
 describe('OrdersService', () => {
   let service: OrdersService;
@@ -15,6 +15,7 @@ describe('OrdersService', () => {
     save: jest.Mock;
   };
   let productRepository: { find: jest.Mock };
+  let orderItemRepository: { find: jest.Mock };
   let restaurantRepository: { findOne: jest.Mock; find: jest.Mock };
   let addressRepository: { findOne: jest.Mock };
   let eventPublisher: { publish: jest.Mock };
@@ -23,7 +24,11 @@ describe('OrdersService', () => {
     isOwnedBy: jest.Mock;
     listIdsByOwner: jest.Mock;
   };
-  let manager: { create: jest.Mock; save: jest.Mock };
+  let manager: {
+    create: jest.Mock;
+    save: jest.Mock;
+    getRepository: jest.Mock;
+  };
 
   const costumerUser = {
     userId: 'costumer-1',
@@ -76,6 +81,10 @@ describe('OrdersService', () => {
       ]),
     };
 
+    orderItemRepository = {
+      find: jest.fn().mockResolvedValue([]),
+    };
+
     restaurantRepository = {
       findOne: jest
         .fn()
@@ -90,22 +99,41 @@ describe('OrdersService', () => {
       }),
     };
 
+    const managerQueryBuilder = {
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+
     manager = {
-      create: jest.fn().mockImplementation((_entity, value) => ({ ...value })),
-      save: jest.fn().mockImplementation((value) =>
-        Promise.resolve({
-          ...value,
-          id: 'order-1',
-          items: value.items.map((item: unknown, index: number) => ({
-            ...(item as object),
-            id: `item-${index}`,
-          })),
-        }),
-      ),
+      create: jest
+        .fn()
+        .mockImplementation(
+          (_entity: unknown, value: Record<string, unknown>) => ({ ...value }),
+        ),
+      save: jest
+        .fn()
+        .mockImplementation(
+          (value: Record<string, unknown> & { items?: unknown[] }) =>
+            Promise.resolve({
+              ...value,
+              id: 'order-1',
+              items: (value.items ?? []).map(
+                (item: unknown, index: number) => ({
+                  ...(item as object),
+                  id: `item-${index}`,
+                }),
+              ),
+            }),
+        ),
+      getRepository: jest.fn().mockReturnValue({
+        createQueryBuilder: jest.fn().mockReturnValue(managerQueryBuilder),
+      }),
     };
 
     const dataSource = {
-      getRepository: jest.fn((entity) => {
+      getRepository: jest.fn((entity: { name: string }) => {
         if (entity.name === 'Order') {
           return orderRepository;
         }
@@ -114,13 +142,19 @@ describe('OrdersService', () => {
           return productRepository;
         }
 
+        if (entity.name === 'OrderItem') {
+          return orderItemRepository;
+        }
+
         if (entity.name === 'RestaurantAddress') {
           return addressRepository;
         }
 
         return restaurantRepository;
       }),
-      transaction: jest.fn(async (callback) => callback(manager)),
+      transaction: jest.fn((callback: (manager: typeof manager) => unknown) =>
+        callback(manager),
+      ),
     } as unknown as DataSource;
 
     eventPublisher = { publish: jest.fn().mockResolvedValue('event-id') };

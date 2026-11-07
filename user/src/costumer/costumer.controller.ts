@@ -1,7 +1,12 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  AUTH_ROLES,
+  JwtAuthGuard,
+  Roles,
+  RolesGuard,
+} from '@restaurant/geolocation';
 import { CostumerService } from './costumer.service';
 import { CreateCostumerDto } from './dto/create-costumer.dto';
-import { UpdateCostumerDto } from './dto/update-costumer.dto';
 
 @Controller('costumer')
 export class CostumerController {
@@ -9,13 +14,13 @@ export class CostumerController {
 
   @Post()
   async createUserCostumer(@Body() createCostumerDto: CreateCostumerDto) {
-    return this.costumerService.createUserCostumer(createCostumerDto)
+    return this.costumerService.createUserCostumer(createCostumerDto);
   }
 
   @Get()
-  getUsers() {
-    return this.costumerService.getAllCostumerUsers();
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(AUTH_ROLES.OWNER)
+  getUsers(@Query('limit') limit?: string, @Query('cursor') cursor?: string) {
+    return this.costumerService.getAllCostumerUsers(limit, cursor);
   }
-
-  
 }

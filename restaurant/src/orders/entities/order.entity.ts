@@ -54,11 +54,10 @@ export class Order {
 
   @OneToMany(() => OrderItem, (item) => item.order, {
     cascade: true,
-    eager: true,
   })
   items!: OrderItem[];
 
-  @CreateDateColumn({ type: 'timestamp', precision: 6 })
+  @CreateDateColumn({ type: 'timestamp', precision: 3 })
   createdAt!: Date;
 
   @UpdateDateColumn({ type: 'timestamp', precision: 6 })

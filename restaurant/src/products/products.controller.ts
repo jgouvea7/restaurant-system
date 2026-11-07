@@ -32,15 +32,16 @@ export class ProductsController {
     @Body() createProductDto: CreateProductDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.productsService.createForOwner(
-      createProductDto,
-      user.ownerId,
-    );
+    return this.productsService.createForOwner(createProductDto, user.ownerId);
   }
 
   @Get()
-  findAll(@Query('restaurantId') restaurantId?: string) {
-    return this.productsService.findAll(restaurantId);
+  findAll(
+    @Query('restaurantId') restaurantId?: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+  ) {
+    return this.productsService.findAll(restaurantId, limit, cursor);
   }
 
   @Get(':id')
@@ -66,10 +67,7 @@ export class ProductsController {
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(AUTH_ROLES.OWNER)
-  remove(
-    @Param('id') id: string,
-    @CurrentUser() user: AuthenticatedUser,
-  ) {
+  remove(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.productsService.removeForOwner(id, user.ownerId);
   }
 }

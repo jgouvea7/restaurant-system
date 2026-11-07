@@ -18,7 +18,10 @@
   "include": [
     "*.ts",
     "auth/**/*.ts",
-    "geolocation/**/*.ts"
+    "config/**/*.ts",
+    "geolocation/**/*.ts",
+    "observability/**/*.ts",
+    "pagination/**/*.ts"
   ],
   "exclude": [
     "node_modules",

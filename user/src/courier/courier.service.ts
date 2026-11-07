@@ -23,7 +23,13 @@ import {
   EVENT_TYPES,
   EventPublisherService,
 } from '@restaurant/aws';
-import { AUTH_ROLES } from '@restaurant/geolocation';
+import {
+  AUTH_ROLES,
+  buildPage,
+  decodeCursor,
+  resolvePageLimit,
+  type CursorPage,
+} from '@restaurant/geolocation';
 import type { AuthenticatedUser } from '@restaurant/geolocation';
 
 export interface FindNearbyCouriersInput {
@@ -37,6 +43,19 @@ export interface NearbyCourier {
   courierId: string;
   vehicleType: VehicleType;
   distanceKm: number;
+}
+
+export interface PublicCourier {
+  courierId: string;
+  vehicleType: VehicleType;
+  available: CourierAvailability;
+  user: {
+    id: string;
+    firstName: string;
+    lastName: string;
+    email: string;
+    status: string;
+  } | null;
 }
 
 @Injectable()
@@ -342,7 +361,7 @@ export class CourierService {
     return {
       courierId,
       orderId,
-      available: released.available,
+      available: CourierAvailability.AVAILABLE,
       released: true,
     };
   }
@@ -505,17 +524,45 @@ export class CourierService {
     return this.toPublicCourier(courier);
   }
 
-  async getAllCourierUsers() {
-    const couriers = await this.dataSource.getRepository(Courier).find({
-      relations: {
-        user: true,
-      },
-    });
+  async getAllCourierUsers(
+    limitValue?: string | number,
+    cursorValue?: string,
+  ): Promise<CursorPage<PublicCourier>> {
+    const limit = resolvePageLimit(limitValue);
+    const cursor = decodeCursor(cursorValue);
 
-    return couriers.map((courier) => this.toPublicCourier(courier));
+    if (cursorValue && !cursor) {
+      throw new BadRequestException('cursor invalido');
+    }
+
+    const query = this.dataSource
+      .getRepository(Courier)
+      .createQueryBuilder('courier')
+      .innerJoinAndSelect('courier.user', 'user')
+      .orderBy('user.createdAt', 'DESC')
+      .addOrderBy('user.id', 'DESC')
+      .take(limit + 1);
+
+    if (cursor) {
+      query.andWhere('(user.createdAt, user.id) < (:createdAt, :id)', {
+        createdAt: cursor.createdAt,
+        id: cursor.id,
+      });
+    }
+
+    const rows = await query.getMany();
+    const page = buildPage(rows, limit, (courier) => ({
+      createdAt: courier.user?.createdAt ?? new Date(0),
+      id: courier.user?.id ?? courier.courierId,
+    }));
+
+    return {
+      items: page.items.map((courier) => this.toPublicCourier(courier)),
+      nextCursor: page.nextCursor,
+    };
   }
 
-  private toPublicCourier(courier: Courier) {
+  private toPublicCourier(courier: Courier): PublicCourier {
     return {
       courierId: courier.courierId,
       vehicleType: courier.vehicleType,
@@ -625,31 +672,33 @@ export class CourierService {
       throw new BadRequestException('Entregador reservado para um pedido');
     }
 
-    courier.available = available
+    const target = available
       ? CourierAvailability.AVAILABLE
       : CourierAvailability.UNAVAILABLE;
 
-    await this.dataSource.getRepository(Courier).save(courier);
+    const query = this.dataSource
+      .getRepository(Courier)
+      .createQueryBuilder()
+      .update(Courier)
+      .set({ available: target })
+      .where('courierId = :courierId', { courierId: courier.courierId });
 
-    try {
-      if (available) {
-        await this.elastiCacheService.addToSet(
-          ELASTIC_CACHE_KEYS.COURIERS_AVAILABLE,
-          courier.courierId,
-        );
-      } else {
-        await this.elastiCacheService.removeFromSet(
-          ELASTIC_CACHE_KEYS.COURIERS_AVAILABLE,
-          courier.courierId,
-        );
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(
-        `Nao foi possivel sincronizar a disponibilidade do entregador ${courier.courierId} no Redis: ${message}`,
-      );
+    if (available) {
+      query.andWhere('reservedForOrderId IS NULL');
     }
 
+    const result = await query.execute();
+
+    if (!result.affected) {
+      if (available) {
+        throw new BadRequestException('Entregador reservado para um pedido');
+      }
+
+      throw new NotFoundException('Entregador nao encontrado');
+    }
+
+    courier.available = target;
+    await this.syncAvailabilityCache(courier.courierId, available);
     await this.eventPublisher.publish(
       EVENT_TYPES.COURIER_AVAILABILITY_CHANGED,
       { courierId: courier.courierId, available },
@@ -657,6 +706,30 @@ export class CourierService {
     );
 
     return courier;
+  }
+
+  private async syncAvailabilityCache(
+    courierId: string,
+    available: boolean,
+  ): Promise<void> {
+    try {
+      if (available) {
+        await this.elastiCacheService.addToSet(
+          ELASTIC_CACHE_KEYS.COURIERS_AVAILABLE,
+          courierId,
+        );
+      } else {
+        await this.elastiCacheService.removeFromSet(
+          ELASTIC_CACHE_KEYS.COURIERS_AVAILABLE,
+          courierId,
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Nao foi possivel sincronizar a disponibilidade do entregador ${courierId} no Redis: ${message}`,
+      );
+    }
   }
 
   private validateCoordinates(latitude: number, longitude: number): void {

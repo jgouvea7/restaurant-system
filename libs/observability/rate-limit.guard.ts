@@ -4,16 +4,16 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
-  Logger,
-  OnModuleDestroy,
 } from '@nestjs/common';
-import Redis from 'ioredis';
+import { getRedisClient } from './redis.client';
 
 interface RateLimitRequest {
   ip?: string;
-  headers: Record<string, string | string[] | undefined>;
   path?: string;
   url?: string;
+}
+interface RateLimitResponse {
+  setHeader(name: string, value: string): void;
 }
 
 interface Bucket {
@@ -21,151 +21,67 @@ interface Bucket {
   resetAt: number;
 }
 
+interface RateLimitResult {
+  count: number;
+  resetAt: number;
+}
+
+const MAX_BUCKETS = 50_000;
+const SENSITIVE_PATHS = new Set([
+  '/auth/login',
+  '/auth/refresh',
+  '/users/authenticate',
+]);
+const REDIS_INCREMENT_SCRIPT = `
+local current = redis.call('INCR', KEYS[1])
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+  ttl = tonumber(ARGV[1])
+end
+return {current, ttl}
+`;
+
 @Injectable()
-export class RateLimitGuard implements CanActivate, OnModuleDestroy {
-  private readonly logger = new Logger(RateLimitGuard.name);
-  private readonly windowMs = Number(
-    process.env.RATE_LIMIT_WINDOW_MS ?? 60_000,
+export class RateLimitGuard implements CanActivate {
+  private readonly windowMs = this.readPositiveInt(
+    'RATE_LIMIT_WINDOW_MS',
+    60_000,
   );
-  private readonly maxRequests = Number(
-    process.env.RATE_LIMIT_MAX_REQUESTS ?? 240,
+  private readonly maxRequests = this.readPositiveInt(
+    'RATE_LIMIT_MAX_REQUESTS',
+    240,
   );
-  private readonly serviceName = process.env.SERVICE_NAME ?? 'unknown';
+  private readonly sensitiveMaxRequests = this.readPositiveInt(
+    'RATE_LIMIT_AUTH_MAX_REQUESTS',
+    10,
+  );
   private readonly buckets = new Map<string, Bucket>();
-  private readonly redis?: Redis;
-  private redisAvailable = false;
-  private redisErrorLogged = false;
-
-  constructor() {
-    if (process.env.RATE_LIMIT_REDIS_ENABLED === 'false') {
-      return;
-    }
-
-    const url = process.env.RATE_LIMIT_REDIS_URL;
-
-    if (!url && !process.env.REDIS_HOST && !process.env.ELASTICACHE_HOST) {
-      return;
-    }
-
-    this.redis = url
-      ? new Redis(url, {
-          lazyConnect: true,
-          enableOfflineQueue: false,
-          maxRetriesPerRequest: 1,
-          retryStrategy: (attempt) => Math.min(attempt * 200, 2000),
-        })
-      : new Redis({
-          host:
-            process.env.REDIS_HOST ??
-            process.env.ELASTICACHE_HOST ??
-            'localhost',
-          port: Number(
-            process.env.REDIS_PORT ?? process.env.ELASTICACHE_PORT ?? 16379,
-          ),
-          password: process.env.REDIS_PASSWORD || undefined,
-          db: Number(process.env.RATE_LIMIT_REDIS_DB ?? 0),
-          lazyConnect: true,
-          enableOfflineQueue: false,
-          maxRetriesPerRequest: 1,
-          retryStrategy: (attempt) => Math.min(attempt * 200, 2000),
-        });
-
-    this.redis.on('ready', () => {
-      this.redisAvailable = true;
-      this.redisErrorLogged = false;
-    });
-    this.redis.on('end', () => {
-      this.redisAvailable = false;
-    });
-    this.redis.on('error', (error: Error) => {
-      this.redisAvailable = false;
-
-      if (!this.redisErrorLogged) {
-        this.logger.warn(
-          `Rate limit distribuido indisponivel; usando memoria: ${error.message}`,
-        );
-        this.redisErrorLogged = true;
-      }
-    });
-
-    void this.redis.connect().catch(() => undefined);
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    if (!this.redis) {
-      return;
-    }
-
-    try {
-      await this.redis.quit();
-    } catch {
-      this.redis.disconnect();
-    }
-  }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<RateLimitRequest>();
-    const path = request.path ?? request.url ?? '';
+    const http = context.switchToHttp();
+    const request = http.getRequest<RateLimitRequest>();
+    const path = this.pathname(request.path ?? request.url ?? '');
 
     if (path.startsWith('/health') || path.startsWith('/metrics')) {
       return true;
     }
 
-    const clientId = this.clientId(request);
-
-    if (this.redis && this.redisAvailable) {
-      const distributed = await this.incrementDistributed(clientId);
-
-      if (distributed !== null) {
-        return this.assertWithinLimit(distributed);
-      }
-    }
-
-    return this.assertWithinLimit(this.incrementInMemory(clientId));
-  }
-
-  private async incrementDistributed(clientId: string): Promise<number | null> {
-    if (!this.redis) {
-      return null;
-    }
-
-    const windowStart = Math.floor(Date.now() / this.windowMs);
-    const key = `rate-limit:${this.serviceName}:${clientId}:${windowStart}`;
-
-    try {
-      const count = await this.redis.incr(key);
-
-      if (count === 1) {
-        await this.redis.pexpire(key, this.windowMs * 2);
-      }
-
-      return count;
-    } catch {
-      this.redisAvailable = false;
-      return null;
-    }
-  }
-
-  private incrementInMemory(clientId: string): number {
+    const isSensitive = SENSITIVE_PATHS.has(path);
+    const maxRequests = isSensitive
+      ? this.sensitiveMaxRequests
+      : this.maxRequests;
+    const clientId = request.ip || 'unknown';
+    const key = `${isSensitive ? 'auth' : 'default'}:${clientId}`;
     const now = Date.now();
-    const current = this.buckets.get(clientId);
+    const { count, resetAt } = await this.consume(key, now);
 
-    if (!current || current.resetAt <= now) {
-      this.buckets.set(clientId, {
-        count: 1,
-        resetAt: now + this.windowMs,
-      });
-      this.prune(now);
-      return 1;
-    }
+    if (count > maxRequests) {
+      const retryAfter = Math.max(1, Math.ceil((resetAt - now) / 1000));
+      http
+        .getResponse<RateLimitResponse>()
+        .setHeader('Retry-After', String(retryAfter));
 
-    current.count += 1;
-
-    return current.count;
-  }
-
-  private assertWithinLimit(count: number): boolean {
-    if (count > this.maxRequests) {
       throw new HttpException(
         'Muitas requisicoes; tente novamente em instantes',
         HttpStatus.TOO_MANY_REQUESTS,
@@ -175,22 +91,95 @@ export class RateLimitGuard implements CanActivate, OnModuleDestroy {
     return true;
   }
 
-  private clientId(request: RateLimitRequest): string {
-    const forwarded = request.headers['x-forwarded-for'];
-    const forwardedIp = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  private async consume(key: string, now: number): Promise<RateLimitResult> {
+    const redis = getRedisClient();
 
-    return forwardedIp?.split(',')[0]?.trim() || request.ip || 'unknown';
+    if (redis) {
+      try {
+        const response = (await redis.eval(
+          REDIS_INCREMENT_SCRIPT,
+          1,
+          `rate-limit:${key}`,
+          String(this.windowMs),
+        )) as [number | string, number | string];
+        const count = Number(response[0]);
+        const ttl = Number(response[1]);
+
+        if (Number.isFinite(count) && Number.isFinite(ttl)) {
+          return {
+            count,
+            resetAt: now + Math.max(ttl, 0),
+          };
+        }
+      } catch {
+        // Redis indisponivel: usa o fallback local para nao bloquear o servico.
+      }
+    }
+
+    return this.consumeLocal(key, now);
+  }
+
+  private consumeLocal(key: string, now: number): RateLimitResult {
+    const current = this.buckets.get(key);
+
+    if (!current || current.resetAt <= now) {
+      const bucket = {
+        count: 1,
+        resetAt: now + this.windowMs,
+      };
+      this.buckets.set(key, bucket);
+      this.prune(now);
+      return bucket;
+    }
+
+    current.count += 1;
+    return current;
+  }
+
+  private pathname(value: string): string {
+    const queryIndex = value.indexOf('?');
+    return queryIndex === -1 ? value : value.slice(0, queryIndex);
   }
 
   private prune(now: number): void {
-    if (this.buckets.size < 10_000) {
+    if (this.buckets.size <= MAX_BUCKETS) {
+      if (this.buckets.size < 10_000) {
+        return;
+      }
+
+      for (const [key, bucket] of this.buckets) {
+        if (bucket.resetAt <= now) {
+          this.buckets.delete(key);
+        }
+      }
+
       return;
     }
 
     for (const [key, bucket] of this.buckets) {
+      if (this.buckets.size <= MAX_BUCKETS / 2) {
+        break;
+      }
+
       if (bucket.resetAt <= now) {
         this.buckets.delete(key);
       }
     }
+
+    while (this.buckets.size > MAX_BUCKETS) {
+      const oldestKey = this.buckets.keys().next().value;
+
+      if (oldestKey === undefined) {
+        break;
+      }
+
+      this.buckets.delete(oldestKey);
+    }
+  }
+
+  private readPositiveInt(name: string, fallback: number): number {
+    const value = Number(process.env[name] ?? fallback);
+    return Number.isFinite(value) && value > 0 ? Math.trunc(value) : fallback;
   }
 }
+

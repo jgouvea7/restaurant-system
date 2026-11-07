@@ -1,45 +1,52 @@
-import { Costumer } from "src/costumer/entities/costumer.entity"
-import { Courier } from "src/courier/entities/courier.entity"
-import { Owner } from "src/owner/entities/owner.entity";
-import { Column, CreateDateColumn, Entity, OneToOne, PrimaryGeneratedColumn, UpdateDateColumn } from "typeorm"
+import { Costumer } from 'src/costumer/entities/costumer.entity';
+import { Courier } from 'src/courier/entities/courier.entity';
+import { Owner } from 'src/owner/entities/owner.entity';
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  OneToOne,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
+} from 'typeorm';
 
 export enum userStatus {
-    ACTIVE = "active",
-    DESACTIVE = "desactive"
+  ACTIVE = 'active',
+  DESACTIVE = 'desactive',
 }
 
 @Entity()
 export class User {
-    @PrimaryGeneratedColumn("uuid")
-    id!: string;
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
 
-    @Column()
-    firstName!: string;
+  @Column()
+  firstName!: string;
 
-    @Column()
-    lastName!: string;
+  @Column()
+  lastName!: string;
 
-    @Column({ unique: true })
-    email!: string;
-    
-    @Column()
-    password!: string
+  @Column({ unique: true })
+  email!: string;
 
-    @Column({ default: userStatus.ACTIVE })
-    status!: userStatus
+  @Column()
+  password!: string;
 
-    @CreateDateColumn({ type: "timestamp", precision: 6 })
-    createdAt!: Date;
+  @Column({ default: userStatus.ACTIVE })
+  status!: userStatus;
 
-    @UpdateDateColumn({ type: "timestamp", precision: 6})
-    updatedAt!: Date;
+  @CreateDateColumn({ type: 'timestamp', precision: 3 })
+  createdAt!: Date;
 
-    @OneToOne(() => Costumer, (costumer) => costumer.user)
-    costumer?: Costumer;
+  @UpdateDateColumn({ type: 'timestamp', precision: 6 })
+  updatedAt!: Date;
 
-    @OneToOne(() => Courier, (courier) => courier.user)
-    courier?: Courier;
+  @OneToOne(() => Costumer, (costumer) => costumer.user)
+  costumer?: Costumer;
 
-    @OneToOne(() => Owner, (owner) => owner.user)
-    owner?: Owner;
+  @OneToOne(() => Courier, (courier) => courier.user)
+  courier?: Courier;
+
+  @OneToOne(() => Owner, (owner) => owner.user)
+  owner?: Owner;
 }

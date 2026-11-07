@@ -22,6 +22,7 @@ ENV NODE_ENV=production \
     REDIS_PORT=16379 \
     SERVICE_NAME=auth \
     SERVICE_AUTH_SECRET=restaurant-dev-service-secret-change-me \
+    TRUST_PROXY=1 \
     USER_SERVICE_URL=http://floci:8080 \
     JWT_ACCESS_TOKEN_SECRET=restaurant-dev-access-secret-change-me \
     ACCESS_TOKEN_TTL_SECONDS=900 \
